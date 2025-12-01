@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+
+    <!-- Primary color (brand color) -->
+    <color name="primary_purple">#6200EE</color>
+    <color name="accent_cyan">#018786</color> <!-- Day-mode cyan slightly darker to ensure contrast -->
+
+    <!-- Background palette (day) -->
+    <color name="app_background">#F5F5F5</color>
+    <color name="card_background">#FFFFFF</color>
+
+    <!-- Text colors (day) -->
+    <color name="text_primary">#121212</color>
+    <color name="text_secondary">#757575</color>
+    <color name="text_inverse">#FFFFFF</color>
+
+    <!-- Chat bubbles (day) -->
+    <color name="bubble_self">#6200EE</color>
+    <color name="bubble_other">#E0E0E0</color>
+</resources>

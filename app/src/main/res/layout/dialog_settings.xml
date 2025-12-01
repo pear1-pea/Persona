@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@color/card_background"
+    android:orientation="vertical"
+    android:padding="24dp">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Settings"
+        android:textColor="@color/text_primary"
+        android:textSize="20sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="16dp"/>
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Theme Preference"
+        android:textColor="@color/primary_purple"
+        android:textStyle="bold"
+        android:layout_marginBottom="8dp"/>
+
+    <RadioGroup
+        android:id="@+id/radioGroupTheme"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <RadioButton
+            android:id="@+id/rbLight"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Light Mode ☀️"
+            android:textColor="@color/text_primary"
+            android:padding="12dp" />
+
+        <RadioButton
+            android:id="@+id/rbDark"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Dark Mode 🌙"
+            android:textColor="@color/text_primary"
+            android:padding="12dp" />
+
+        <RadioButton
+            android:id="@+id/rbSystem"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Follow System ⚙️"
+            android:textColor="@color/text_primary"
+            android:padding="12dp" />
+    </RadioGroup>
+
+    <!--additional settings to be added later -->
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="More settings coming soon..."
+        android:textColor="@color/text_secondary"
+        android:textSize="12sp"
+        android:layout_marginTop="24dp"/>
+
+</LinearLayout>

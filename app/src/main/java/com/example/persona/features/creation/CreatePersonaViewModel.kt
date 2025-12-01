@@ -1,0 +1,62 @@
+package com.example.persona.features.creation
+
+import android.util.Log
+import com.example.persona.core.base.BaseViewModel
+import com.example.persona.data.repository.CloudChatRepository
+import com.example.persona.domain.repository.PersonaRepository
+import com.google.gson.Gson
+import com.google.gson.annotations.SerializedName
+import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import javax.inject.Inject
+
+
+sealed class CreationEvent {
+    object Loading : CreationEvent()
+    data class Generated(val name: String, val story: String, val traits: List<String>) : CreationEvent()
+    object Success : CreationEvent()
+}
+
+@HiltViewModel
+class CreatePersonaViewModel @Inject constructor(
+    private val repository: PersonaRepository,
+    private val cloudRepository: CloudChatRepository
+    ) : BaseViewModel() { 
+
+    private val _event = MutableSharedFlow<CreationEvent>()
+    val event = _event.asSharedFlow()
+
+    private val gson = Gson()
+
+    // AI auto-generate
+    fun generateAI(keywords: String) {
+        launchCatching {
+            _event.emit(CreationEvent.Loading)
+
+            // Call cloud API
+            val jsonString = cloudRepository.generatePersonaProfile(keywords)
+
+            Log.d("CreatePersonaVM", "AI Raw Response: $jsonString")
+
+            val cleanJson = jsonString
+                .replace("```json", "")
+                .replace("```", "")
+                .trim()
+
+            val dto = gson.fromJson(cleanJson, GeneratedPersonaDto::class.java)
+
+            _event.emit(CreationEvent.Generated(dto.name, dto.backstory, dto.traits))
+        }
+    }
+
+    // Save persona
+    fun createPersona(name: String, story: String, traits: List<String>) {
+        if (name.isBlank()) return
+
+        launchCatching {
+            repository.addPersona(name, traits, story)
+            _event.emit(CreationEvent.Success)
+        }
+    }
+}

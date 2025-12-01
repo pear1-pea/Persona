@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+
+    <!-- Primary color -->
+    <color name="primary_purple">#BB86FC</color> <!-- Night-mode purple is usually slightly lighter -->
+    <color name="accent_cyan">#03DAC5</color>
+
+    <!-- Background palette (night) -->
+    <color name="app_background">#12121E</color>
+    <color name="card_background">#1E1E2C</color>
+
+    <!-- Text colors (night) -->
+    <color name="text_primary">#FFFFFF</color>
+    <color name="text_secondary">#B0B0C0</color>
+    <color name="text_inverse">#000000</color>
+
+    <!-- Chat bubbles (night) -->
+    <color name="bubble_self">#6200EE</color>
+    <color name="bubble_other">#2C2C3E</color>
+</resources>
