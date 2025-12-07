@@ -2,19 +2,24 @@ package com.example.persona.features.feed
 
 import android.view.LayoutInflater
 import android.view.ViewGroup
+import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
 import coil.load
 import coil.transform.CircleCropTransformation
 import com.example.persona.R
+import com.example.persona.core.util.SimpleDiffCallback
 import com.example.persona.databinding.ItemFeedPostBinding
 import com.example.persona.domain.model.Persona
 import kotlin.math.abs
 
 class FeedAdapter(
     private val onChatClick: (Persona) -> Unit
-) : RecyclerView.Adapter<FeedAdapter.ViewHolder>() {
-
-    private val personas = mutableListOf<Persona>()
+) : ListAdapter<Persona, FeedAdapter.ViewHolder>(
+    SimpleDiffCallback(
+        areItemsSame = { old, new -> old.id == new.id },
+        areContentsSame = { old, new -> old == new }
+    )
+) {
 
     // Preset a list of mock feed captions to simulate AI posts
     private val mockQuotes = listOf(
@@ -30,11 +35,6 @@ class FeedAdapter(
         "Detected a disturbance in the quantum field. Or maybe it's just lag. 📶"
     )
 
-    fun setData(newList: List<Persona>) {
-        personas.clear()
-        personas.addAll(newList)
-        notifyDataSetChanged()
-    }
 
     class ViewHolder(val binding: ItemFeedPostBinding) : RecyclerView.ViewHolder(binding.root)
 
@@ -48,7 +48,7 @@ class FeedAdapter(
     }
 
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {
-        val persona = personas[position]
+        val persona = getItem(position)
 
         with(holder.binding) {
             tvUserName.text = persona.name
@@ -58,12 +58,12 @@ class FeedAdapter(
 
             // Load avatar
             ivUserAvatar.load(persona.avatarUrl) {
-                crossfade(true)
+                crossfade(false)
                 placeholder(R.drawable.ic_launcher_background)
                 transformations(CircleCropTransformation())
             }
 
-            val imageUrl = if (persona.postImageUrl.isNotEmpty()) persona.postImageUrl else R.drawable.ic_launcher_background
+            val imageUrl = persona.postImageUrl.ifEmpty { R.drawable.ic_launcher_background }
 
             ivPostImage.load(imageUrl) {
                 crossfade(true)
@@ -76,6 +76,4 @@ class FeedAdapter(
             }
         }
     }
-
-    override fun getItemCount() = personas.size
 }

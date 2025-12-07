@@ -43,9 +43,6 @@
                     app:singleLine="true"
                     app:singleSelection="true"
                     app:selectionRequired="true">
-
-                    
-
                 </com.google.android.material.chip.ChipGroup>
             </HorizontalScrollView>
         </LinearLayout>

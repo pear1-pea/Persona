@@ -11,16 +11,13 @@ import com.example.persona.domain.model.Persona
 import com.example.persona.domain.repository.ChatRepository
 import com.example.persona.domain.repository.PersonaRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flatMapLatest
-import kotlinx.coroutines.launch
 import java.util.UUID
 import javax.inject.Inject
 
@@ -67,7 +64,7 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    fun sendMessage(userText: String, personaName: String, isSymbiosis: Boolean) {
+    fun sendMessage(userText: String,  isSymbiosis: Boolean) {
         val persona = _currentPersona.value ?: return
         val personaId = persona.id
 
@@ -98,17 +95,15 @@ class ChatViewModel @Inject constructor(
             chatRepository.saveMessage(aiMsg)
 
             // Intelligent routing logic
-            var mode = HybridAiRepository.Mode.EDGE
-            if (forceCloud || !isSymbiosis) {
-                mode = HybridAiRepository.Mode.CLOUD
+            val mode = if (forceCloud || !isSymbiosis) {
+                HybridAiRepository.Mode.CLOUD
             } else {
-                _isCloudMode.value = false
                 // On-device complexity evaluation
                 val score = hybridRepository.evaluateComplexity(finalUserText)
                 if (score > 0.5f) {
-                    mode = HybridAiRepository.Mode.CLOUD
+                    HybridAiRepository.Mode.CLOUD
                 } else {
-                    mode = HybridAiRepository.Mode.EDGE
+                    HybridAiRepository.Mode.EDGE
                 }
             }
             _isCloudMode.value = (mode == HybridAiRepository.Mode.CLOUD)

@@ -57,7 +57,7 @@ class FeedFragment : Fragment() {
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.uiState.collect { list ->
-                    adapter.setData(list)
+                    adapter.submitList(list)
                 }
             }
         }

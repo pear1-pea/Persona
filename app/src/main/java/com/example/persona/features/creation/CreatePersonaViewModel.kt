@@ -16,6 +16,7 @@ sealed class CreationEvent {
     object Loading : CreationEvent()
     data class Generated(val name: String, val story: String, val traits: List<String>) : CreationEvent()
     object Success : CreationEvent()
+    object Error : CreationEvent()
 }
 
 @HiltViewModel
@@ -34,19 +35,24 @@ class CreatePersonaViewModel @Inject constructor(
         launchCatching {
             _event.emit(CreationEvent.Loading)
 
-            // Call cloud API
-            val jsonString = cloudRepository.generatePersonaProfile(keywords)
+            try {
+                // Call cloud API
+                val jsonString = cloudRepository.generatePersonaProfile(keywords)
 
-            Log.d("CreatePersonaVM", "AI Raw Response: $jsonString")
+                Log.d("CreatePersonaVM", "AI Raw Response: $jsonString")
 
-            val cleanJson = jsonString
-                .replace("```json", "")
-                .replace("```", "")
-                .trim()
+                val cleanJson = jsonString
+                    .replace("```json", "")
+                    .replace("```", "")
+                    .trim()
 
-            val dto = gson.fromJson(cleanJson, GeneratedPersonaDto::class.java)
+                val dto = gson.fromJson(cleanJson, GeneratedPersonaDto::class.java)
 
-            _event.emit(CreationEvent.Generated(dto.name, dto.backstory, dto.traits))
+                _event.emit(CreationEvent.Generated(dto.name, dto.backstory, dto.traits))
+            }catch (e:Exception){
+                _event.emit(CreationEvent.Error)
+                throw e
+            }
         }
     }
 

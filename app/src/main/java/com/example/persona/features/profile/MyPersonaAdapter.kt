@@ -2,24 +2,24 @@ package com.example.persona.features.profile
 
 import android.view.LayoutInflater
 import android.view.ViewGroup
+import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
 import coil.load
 import coil.transform.CircleCropTransformation
 import com.example.persona.R
+import com.example.persona.core.util.SimpleDiffCallback
 import com.example.persona.databinding.ItemMyPersonaBinding
 import com.example.persona.domain.model.Persona
 
 // Adapter fills Persona data into the RecyclerView
 class MyPersonaAdapter(
     private val onClick: (Persona) -> Unit
-) : RecyclerView.Adapter<MyPersonaAdapter.ViewHolder>() {
-
-    private var list = listOf<Persona>()
-
-    fun submitList(newList: List<Persona>) {
-        list = newList
-        notifyDataSetChanged() 
-    }
+) : ListAdapter<Persona, MyPersonaAdapter.ViewHolder>(
+    SimpleDiffCallback(
+        areItemsSame = { old, new -> old.id == new.id },
+        areContentsSame = { old, new -> old == new }
+    )
+) {
 
     class ViewHolder(val binding: ItemMyPersonaBinding) : RecyclerView.ViewHolder(binding.root)
 
@@ -33,7 +33,7 @@ class MyPersonaAdapter(
     }
 
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {
-        val item = list[position]
+        val item = getItem(position)
 
         with(holder.binding) {
             tvName.text = item.name
@@ -50,7 +50,4 @@ class MyPersonaAdapter(
         }
     }
 
-    override fun getItemCount(): Int {
-        return list.size
-    }
 }

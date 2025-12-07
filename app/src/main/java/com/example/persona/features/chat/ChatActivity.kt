@@ -1,7 +1,6 @@
 package com.example.persona.features.chat
 
-import android.content.Context
-import android.graphics.Color
+import android.annotation.SuppressLint
 import android.os.Bundle
 import android.view.View
 import android.view.inputmethod.EditorInfo
@@ -9,6 +8,7 @@ import android.view.inputmethod.InputMethodManager
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.graphics.toColorInt
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -36,6 +36,7 @@ class ChatActivity : AppCompatActivity() {
     // Use lazy to initialize adapter
     private val adapter: ChatAdapter by lazy { ChatAdapter(markdownHelper) }
 
+    @SuppressLint("SetTextI18n")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityChatBinding.inflate(layoutInflater)
@@ -52,7 +53,7 @@ class ChatActivity : AppCompatActivity() {
 
         binding.rvChatMessages.layoutManager = LinearLayoutManager(this).apply {
             reverseLayout = true // reverse layout so newest messages appear at the bottom
-//            stackFromEnd = true
+            stackFromEnd = true
         }
         binding.rvChatMessages.adapter = adapter
 
@@ -72,9 +73,9 @@ class ChatActivity : AppCompatActivity() {
                             binding.tvModeLabel.text = "CLOUD"
                             binding.tvModeLabel.setTextColor(ContextCompat.getColor(this@ChatActivity, R.color.text_secondary))
                         } else {
-                            binding.indicatorCard.setCardBackgroundColor(Color.parseColor("#4CAF50"))
+                            binding.indicatorCard.setCardBackgroundColor("#4CAF50".toColorInt())
                             binding.tvModeLabel.text = "EDGE"
-                            binding.tvModeLabel.setTextColor(Color.parseColor("#4CAF50"))
+                            binding.tvModeLabel.setTextColor("#4CAF50".toColorInt())
                         }
                     }
                 }
@@ -84,7 +85,7 @@ class ChatActivity : AppCompatActivity() {
                     viewModel.currentPersona.collect { persona ->
                         if (persona != null) {
                             binding.ivChatAvatar.load(persona.avatarUrl) {
-                                crossfade(true)
+                                crossfade(false)
                                 placeholder(R.drawable.ic_launcher_background)
                                 transformations(CircleCropTransformation())
                             }
@@ -97,9 +98,9 @@ class ChatActivity : AppCompatActivity() {
         binding.btnSend.setOnClickListener {
             val text = binding.etMessage.text.toString()
             if (text.isNotEmpty()) {
-                viewModel.sendMessage(text, personaName, isSymbiosis)
+                viewModel.sendMessage(text, isSymbiosis)
                 binding.etMessage.setText("")
-                binding.rvChatMessages.scrollToPosition(0)
+                binding.rvChatMessages.smoothScrollToPosition(0)
             }
         }
 
@@ -114,7 +115,7 @@ class ChatActivity : AppCompatActivity() {
     }
 
     private fun hideKeyboard(view: View) {
-        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+        val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
         imm.hideSoftInputFromWindow(view.windowToken, 0)
         view.clearFocus()
     }

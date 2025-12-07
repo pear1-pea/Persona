@@ -40,8 +40,8 @@ abstract class BaseViewModel : ViewModel() {
 
     private fun handleException(t: Throwable) {
         val message = when (t) {
-            is IOException -> "网络连接异常，请检查网络设置" 
             is SocketTimeoutException -> "请求超时，服务器响应过慢"
+            is IOException -> "网络连接异常，请检查网络设置"
             is HttpException -> {
                 when (t.code()) {
                     401 -> "认证失败 (API Key 无效)"

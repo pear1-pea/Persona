@@ -2,21 +2,21 @@ package com.example.persona.features.discovery
 
 import android.view.LayoutInflater
 import android.view.ViewGroup
+import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
 import coil.load
 import com.example.persona.R
+import com.example.persona.core.util.SimpleDiffCallback
 import com.example.persona.databinding.ItemDiscoveryCardBinding
 import com.example.persona.domain.model.Persona
 
 class DiscoveryAdapter(private val onClick: (Persona) -> Unit) :
-    RecyclerView.Adapter<DiscoveryAdapter.ViewHolder>() {
-
-    private var list = listOf<Persona>()
-
-    fun submitList(newList: List<Persona>) {
-        list = newList
-        notifyDataSetChanged()
-    }
+    ListAdapter<Persona, DiscoveryAdapter.ViewHolder>(
+        SimpleDiffCallback(
+            areItemsSame = { old, new -> old.id == new.id },
+            areContentsSame = { old, new -> old == new }
+        )
+    ){
 
     class ViewHolder(val binding: ItemDiscoveryCardBinding) : RecyclerView.ViewHolder(binding.root)
 
@@ -28,7 +28,7 @@ class DiscoveryAdapter(private val onClick: (Persona) -> Unit) :
     }
 
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {
-        val item = list[position]
+        val item = getItem(position)
         holder.binding.tvName.text = item.name
         holder.binding.tvIntro.text = item.backstory
         holder.binding.ivPersonaImage.load(item.avatarUrl) {
@@ -38,5 +38,4 @@ class DiscoveryAdapter(private val onClick: (Persona) -> Unit) :
         holder.itemView.setOnClickListener { onClick(item) }
     }
 
-    override fun getItemCount() = list.size
 }

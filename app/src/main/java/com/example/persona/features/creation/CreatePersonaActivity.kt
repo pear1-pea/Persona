@@ -1,25 +1,29 @@
 package com.example.persona.features.creation
 
+import android.annotation.SuppressLint
 import android.os.Bundle
-import android.widget.Toast
-import androidx.activity.enableEdgeToEdge
+import android.view.View
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.lifecycleScope
 import com.example.persona.R
 import com.example.persona.core.util.observeErrorEvents
 import com.example.persona.databinding.ActivityCreatePersonaBinding
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 @AndroidEntryPoint
 class CreatePersonaActivity : AppCompatActivity() {
 
+    private var progressJob: Job? = null
+
     private lateinit var binding: ActivityCreatePersonaBinding
     private val viewModel: CreatePersonaViewModel by viewModels()
 
+    @SuppressLint("SetTextI18n")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityCreatePersonaBinding.inflate(layoutInflater)
@@ -59,16 +63,17 @@ class CreatePersonaActivity : AppCompatActivity() {
             viewModel.event.collect { event ->
                 when (event) {
                     is CreationEvent.Loading -> {
+                        startFakeProgress()
+                        setUiEnabled(false)
                         binding.btnAiGenerate.text = "Generating..."
-                        binding.btnAiGenerate.isEnabled = false
                     }
                     is CreationEvent.Generated -> {
+                        stopFakeProgress(success = true)
+                        setUiEnabled(true)
                         binding.btnAiGenerate.text = "✨ AI Auto-Generate"
-                        binding.btnAiGenerate.isEnabled = true
 
                         binding.etName.setText(event.name)
                         binding.etBackstory.setText(event.story)
-
                         binding.chipGroupTraits.removeAllViews()
 
                         // Add generated trait chips (selected)
@@ -80,6 +85,12 @@ class CreatePersonaActivity : AppCompatActivity() {
                     is CreationEvent.Success -> {
                         android.widget.Toast.makeText(this@CreatePersonaActivity, "Persona Created!", android.widget.Toast.LENGTH_SHORT).show()
                         finish()
+                    }
+
+                    is CreationEvent.Error -> {
+                        stopFakeProgress(success = false)
+                        setUiEnabled(true)
+                        binding.btnAiGenerate.text = "✨ AI Auto-Generate"
                     }
                 }
             }
@@ -111,6 +122,58 @@ class CreatePersonaActivity : AppCompatActivity() {
         for (trait in defaultTraits) {
             val chip = createChip(trait, isSelected = false)
             binding.chipGroupTraits.addView(chip)
+        }
+    }
+
+    private fun setUiEnabled(enabled: Boolean) {
+        binding.etName.isEnabled = enabled
+        binding.etBackstory.isEnabled = enabled
+        binding.chipGroupTraits.isEnabled = enabled
+        binding.btnAiGenerate.isEnabled = enabled // 按钮本身在 event.Loading 中会被特殊处理
+        binding.btnCreate.isEnabled = enabled
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        progressJob?.cancel()
+    }
+
+    private fun startFakeProgress() {
+        progressJob?.cancel()
+
+        binding.progressBarHorizontal.visibility = View.VISIBLE
+        binding.progressBarHorizontal.progress = 0
+
+        progressJob = lifecycleScope.launch {
+            val maxFakeProgress = 98
+            val fakeDurationMs = 10000L
+            val interval = 50L
+
+            val totalSteps = fakeDurationMs.toFloat() / interval.toFloat()
+            val stepFloat = maxFakeProgress.toFloat() / totalSteps
+
+            while (binding.progressBarHorizontal.progress < maxFakeProgress && isActive) {
+                delay(interval)
+                var increment = stepFloat.toInt().coerceAtLeast(1)
+                val remaining = maxFakeProgress - binding.progressBarHorizontal.progress
+                if (increment > remaining) {
+                    increment = remaining
+                }
+                binding.progressBarHorizontal.progress += increment
+            }
+        }
+    }
+
+    private fun stopFakeProgress(success: Boolean) {
+        progressJob?.cancel()
+        if (success) {
+            binding.progressBarHorizontal.progress = 100
+            binding.progressBarHorizontal.postDelayed({
+                binding.progressBarHorizontal.visibility = View.GONE
+            }, 300)
+        } else {
+            binding.progressBarHorizontal.visibility = View.GONE
+            binding.progressBarHorizontal.progress = 0
         }
     }
 }

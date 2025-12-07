@@ -43,6 +43,8 @@ class DiscoveryFragment : Fragment() {
         super.onViewCreated(view, savedInstanceState)
 
         setupRecyclerView()
+        setupFilterChips()
+        observeData()
         setupSearchView()
         observeErrorEvents(viewModel, binding.root)
     }

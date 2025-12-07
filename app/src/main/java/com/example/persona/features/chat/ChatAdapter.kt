@@ -3,9 +3,9 @@ package com.example.persona.features.chat
 import android.view.LayoutInflater
 import android.view.ViewGroup
 import androidx.paging.PagingDataAdapter
-import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.RecyclerView
 import com.example.persona.core.util.MarkdownHelper
+import com.example.persona.core.util.SimpleDiffCallback
 import com.example.persona.databinding.ItemMessageReceivedBinding
 import com.example.persona.databinding.ItemMessageSentBinding
 import com.example.persona.domain.model.Message
@@ -14,16 +14,16 @@ class ChatAdapter(
     private val markdownHelper: MarkdownHelper
 ) : PagingDataAdapter<Message, RecyclerView.ViewHolder>(MessageDiffCallback) {
 
-    private val TYPE_SENT = 1
-    private val TYPE_RECEIVED = 2
+    private val typeSent = 1
+    private val typeReceived = 2
 
     override fun getItemViewType(position: Int): Int {
         val message = getItem(position)
-        return if (message?.isFromUser == true) TYPE_SENT else TYPE_RECEIVED
+        return if (message?.isFromUser == true) typeSent else typeReceived
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
-        return if (viewType == TYPE_SENT) {
+        return if (viewType == typeSent) {
             val binding = ItemMessageSentBinding.inflate(
                 LayoutInflater.from(parent.context), parent, false
             )
@@ -70,22 +70,19 @@ class ChatAdapter(
     class ReceivedViewHolder(val binding: ItemMessageReceivedBinding) : RecyclerView.ViewHolder(binding.root)
 
     companion object {
-        private val MessageDiffCallback = object : DiffUtil.ItemCallback<Message>() {
-            override fun areItemsTheSame(oldItem: Message, newItem: Message): Boolean {
-                return oldItem.id == newItem.id
-            }
-
-            override fun areContentsTheSame(oldItem: Message, newItem: Message): Boolean {
-                return oldItem.content == newItem.content &&
+        private val MessageDiffCallback = SimpleDiffCallback<Message>(
+            areItemsSame = { oldItem, newItem ->
+                oldItem.id == newItem.id
+            },
+            areContentsSame = { oldItem, newItem ->
+                oldItem.content == newItem.content &&
                         oldItem.isFromUser == newItem.isFromUser
-            }
-
-            override fun getChangePayload(oldItem: Message, newItem: Message): Any? {
+            },
+            payloadProvider = { oldItem, newItem ->
                 if (oldItem.content != newItem.content) {
-                    return "CONTENT_UPDATE"
-                }
-                return null
+                    "CONTENT_UPDATE"
+                } else null
             }
-        }
+        )
     }
 }
