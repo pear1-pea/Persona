@@ -12,6 +12,7 @@ import androidx.core.graphics.toColorInt
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import androidx.paging.LoadState
 import androidx.recyclerview.widget.LinearLayoutManager
 import coil.load
 import coil.transform.CircleCropTransformation
@@ -21,6 +22,8 @@ import com.example.persona.core.util.observeErrorEvents
 import com.example.persona.databinding.ActivityChatBinding
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChangedBy
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -33,7 +36,6 @@ class ChatActivity : AppCompatActivity() {
     @Inject
     lateinit var markdownHelper: MarkdownHelper
 
-    // Use lazy to initialize adapter
     private val adapter: ChatAdapter by lazy { ChatAdapter(markdownHelper) }
 
     @SuppressLint("SetTextI18n")
@@ -52,35 +54,40 @@ class ChatActivity : AppCompatActivity() {
         viewModel.loadPersonaInfo(personaName)
 
         binding.rvChatMessages.layoutManager = LinearLayoutManager(this).apply {
-            reverseLayout = true // reverse layout so newest messages appear at the bottom
+            reverseLayout = true
             stackFromEnd = true
         }
         binding.rvChatMessages.adapter = adapter
 
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
-                // Observe Paging message flow
                 launch {
                     viewModel.messagesFlow.collectLatest { pagingData ->
                         adapter.submitData(pagingData)
                     }
                 }
-                // Observe Cloud/Edge mode 
+
+                launch {
+                    adapter.loadStateFlow
+                        // Only react when the refresh operation changes state.
+                        .distinctUntilChangedBy { it.refresh }
+                        // Only scroll when the data has finished loading.
+                        .filter { it.refresh is LoadState.NotLoading }
+                        .collect { 
+                            if (adapter.itemCount > 0) {
+                                binding.rvChatMessages.scrollToPosition(0)
+                            }
+                        }
+                }
+
                 launch {
                     viewModel.isCloudMode.collect { isCloud ->
-                        if (isCloud) {
-                            binding.indicatorCard.setCardBackgroundColor(ContextCompat.getColor(this@ChatActivity, R.color.accent_cyan))
-                            binding.tvModeLabel.text = "CLOUD"
-                            binding.tvModeLabel.setTextColor(ContextCompat.getColor(this@ChatActivity, R.color.text_secondary))
-                        } else {
-                            binding.indicatorCard.setCardBackgroundColor("#4CAF50".toColorInt())
-                            binding.tvModeLabel.text = "EDGE"
-                            binding.tvModeLabel.setTextColor("#4CAF50".toColorInt())
-                        }
+                        binding.indicatorCard.setCardBackgroundColor(if (isCloud) ContextCompat.getColor(this@ChatActivity, R.color.accent_cyan) else "#4CAF50".toColorInt())
+                        binding.tvModeLabel.text = if (isCloud) "CLOUD" else "EDGE"
+                        binding.tvModeLabel.setTextColor(if (isCloud) ContextCompat.getColor(this@ChatActivity, R.color.text_secondary) else "#4CAF50".toColorInt())
                     }
                 }
 
-                // Observe persona and load avatar
                 launch {
                     viewModel.currentPersona.collect { persona ->
                         if (persona != null) {
@@ -96,11 +103,10 @@ class ChatActivity : AppCompatActivity() {
         }
 
         binding.btnSend.setOnClickListener {
-            val text = binding.etMessage.text.toString()
+            val text = binding.etMessage.text.toString().trim()
             if (text.isNotEmpty()) {
                 viewModel.sendMessage(text, isSymbiosis)
                 binding.etMessage.setText("")
-                binding.rvChatMessages.smoothScrollToPosition(0)
             }
         }
 

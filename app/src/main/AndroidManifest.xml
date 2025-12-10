@@ -4,6 +4,9 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <queries>
+        <package android:name="com.google.android.gms" />
+    </queries>
     <application
         android:name=".PersonaApp"
         android:allowBackup="true"
@@ -21,14 +24,16 @@
             android:name=".features.chat.ChatActivity"
             android:exported="false" />
         <activity
-            android:name=".MainActivity"
+            android:name=".features.auth.AuthActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
-
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity
+            android:name=".MainActivity"
+            android:exported="false">
+        </activity>
     </application>
-
 </manifest>

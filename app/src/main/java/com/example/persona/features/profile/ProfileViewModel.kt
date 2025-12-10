@@ -1,7 +1,5 @@
 package com.example.persona.features.profile
 
-import androidx.lifecycle.ViewModel
-import androidx.lifecycle.viewModelScope
 import com.example.persona.core.base.BaseViewModel
 import com.example.persona.domain.model.Persona
 import com.example.persona.domain.repository.PersonaRepository
@@ -9,7 +7,6 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @HiltViewModel
@@ -25,9 +22,9 @@ class ProfileViewModel @Inject constructor(
     }
 
     fun loadMyPersonas() {
-        launchCatching {
+        launchCatching(block = {
             val newList = repository.getMyPersonas()
             _myPersonas.value = newList
-        }
+        })
     }
 }

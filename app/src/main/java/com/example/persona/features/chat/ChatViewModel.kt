@@ -29,10 +29,10 @@ class ChatViewModel @Inject constructor(
 ) : BaseViewModel() {
 
     init {
-        launchCatching {
+        launchCatching(block = {
             hybridRepository.initEdgeModel()
             Log.d("ChatViewModel", "Edge model initialized")
-        }
+        })
     }
 
     // State: cloud mode indicator
@@ -57,11 +57,11 @@ class ChatViewModel @Inject constructor(
 
     // Load current persona info
     fun loadPersonaInfo(name: String) {
-        launchCatching {
+        launchCatching(block = {
             val all = personaRepository.getPersonas() + personaRepository.getMyPersonas()
             val found = all.find { it.name == name }
             _currentPersona.value = found
-        }
+        })
     }
 
     fun sendMessage(userText: String,  isSymbiosis: Boolean) {
@@ -74,7 +74,7 @@ class ChatViewModel @Inject constructor(
             finalUserText = finalUserText.removePrefix("@cloud").removePrefix("@Cloud").trim()
         }
 
-        launchCatching {
+        launchCatching(block = {
             val userMsgId = UUID.randomUUID().toString()
             val userMsg = Message(
                 id = userMsgId,
@@ -83,7 +83,7 @@ class ChatViewModel @Inject constructor(
                 isFromUser = true,
                 timestamp = System.currentTimeMillis()
             )
-            chatRepository.saveMessage(userMsg)
+            chatRepository.saveMessage(userMsg, persona)
 
             val aiMsgId = UUID.randomUUID().toString()
             val aiMsg = Message(
@@ -92,7 +92,7 @@ class ChatViewModel @Inject constructor(
                 content = "Thinking...",
                 isFromUser = false,
                 timestamp = System.currentTimeMillis() + 1 )
-            chatRepository.saveMessage(aiMsg)
+            chatRepository.saveMessage(aiMsg, persona)
 
             // Intelligent routing logic
             val mode = if (forceCloud || !isSymbiosis) {
@@ -139,6 +139,6 @@ class ChatViewModel @Inject constructor(
 
                     chatRepository.updateMessageContent(aiMsgId, currentContent)
                 }
-        }
+        })
     }
 }

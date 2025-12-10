@@ -4,6 +4,9 @@ plugins {
     alias(libs.plugins.kotlin.android)
     id("kotlin-kapt")
     id("com.google.dagger.hilt.android")
+    id("com.google.gms.google-services")
+    id("com.google.firebase.crashlytics")
+    id("androidx.navigation.safeargs.kotlin")
 }
 
 android {
@@ -58,7 +61,10 @@ dependencies {
     implementation(libs.androidx.activity)
     implementation(libs.androidx.constraintlayout)
 
-    val nav_version = "2.8.0" // 或者最新版本
+    implementation("androidx.credentials:credentials:1.3.0")
+    implementation("androidx.credentials:credentials-play-services-auth:1.3.0")
+
+    val nav_version = "2.8.0"
     implementation("androidx.navigation:navigation-fragment-ktx:$nav_version")
     implementation("androidx.navigation:navigation-ui-ktx:$nav_version")
 
@@ -98,6 +104,16 @@ dependencies {
     val paging_version = "3.3.0" // 使用较新版本
     implementation("androidx.paging:paging-runtime:$paging_version")
     implementation("androidx.room:room-paging:2.6.1")// 编译器
+
+    implementation(platform("com.google.firebase:firebase-bom:33.0.0"))
+    implementation("com.google.firebase:firebase-auth-ktx")
+    implementation("com.google.firebase:firebase-firestore-ktx")
+    implementation("com.google.firebase:firebase-analytics-ktx")
+    implementation ("com.google.firebase:firebase-crashlytics-ktx")
+
+//    implementation("com.google.android.gms:play-services-auth:21.2.0")
+    implementation("com.google.android.libraries.identity.googleid:googleid:1.1.1")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.8.1")
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

@@ -21,13 +21,18 @@ abstract class BaseViewModel : ViewModel() {
     }
 
     protected fun launchCatching(
-        block: suspend CoroutineScope.() -> Unit
+        block: suspend CoroutineScope.() -> Unit,
+        onError: ((Throwable) -> Unit)? = null
     ) {
         viewModelScope.launch(exceptionHandler) {
             try {
                 block()
             } catch (e: Exception) {
-                handleException(e)
+                if (onError != null) {
+                    onError(e)
+                } else {
+                    handleException(e)
+                }
             }
         }
     }

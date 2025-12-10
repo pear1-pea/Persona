@@ -34,7 +34,7 @@ object DatabaseModule {
         return Room.databaseBuilder(
             context,
             AppDatabase::class.java,
-            "persona_db"
+            "persona_db_v2"
         )
             // Callback for prepopulating data 
             .addCallback(object : RoomDatabase.Callback() {

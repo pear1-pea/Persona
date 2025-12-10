@@ -1,5 +1,6 @@
 package com.example.persona.data.repository
 
+import com.example.persona.core.auth.AuthManager
 import com.example.persona.data.local.dao.PersonaDao
 import com.example.persona.data.mapper.toDomain
 import com.example.persona.data.mapper.toEntity
@@ -12,7 +13,8 @@ import javax.inject.Singleton
 
 @Singleton
 class RoomPersonaRepository @Inject constructor(
-    private val dao: PersonaDao
+    private val dao: PersonaDao,
+    private val authManager: AuthManager
 ) : PersonaRepository {
 
     override suspend fun getPersonas(): List<Persona> {
@@ -20,11 +22,11 @@ class RoomPersonaRepository @Inject constructor(
     }
 
     override suspend fun getMyPersonas(): List<Persona> {
-        return dao.getPersonasByCreator("me").map { it.toDomain() }
-    }
+        return dao.getPersonasByCreator(authManager.currentRepoId).map { it.toDomain() }    }
 
     override suspend fun addPersona(name: String, traits: List<String>, backstory: String) {
         val newId = UUID.randomUUID().toString()
+        val currentUserId = authManager.currentRepoId
         val newPersona = Persona(
             id = newId,
             name = name,
@@ -32,7 +34,7 @@ class RoomPersonaRepository @Inject constructor(
             postImageUrl = "https://picsum.photos/seed/$newId/800/600",
             traits = traits,
             backstory = backstory,
-            creatorId = "me"
+            creatorId = currentUserId
         )
         dao.insertCompletePersona(newPersona.toEntity(), newPersona.toTraitEntities())
     }

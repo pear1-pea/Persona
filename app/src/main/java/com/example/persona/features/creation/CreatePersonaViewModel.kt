@@ -1,16 +1,16 @@
 package com.example.persona.features.creation
 
 import android.util.Log
+import androidx.lifecycle.viewModelScope
 import com.example.persona.core.base.BaseViewModel
 import com.example.persona.data.repository.CloudChatRepository
 import com.example.persona.domain.repository.PersonaRepository
 import com.google.gson.Gson
-import com.google.gson.annotations.SerializedName
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.launch
 import javax.inject.Inject
-
 
 sealed class CreationEvent {
     object Loading : CreationEvent()
@@ -23,7 +23,7 @@ sealed class CreationEvent {
 class CreatePersonaViewModel @Inject constructor(
     private val repository: PersonaRepository,
     private val cloudRepository: CloudChatRepository
-    ) : BaseViewModel() { 
+) : BaseViewModel() {
 
     private val _event = MutableSharedFlow<CreationEvent>()
     val event = _event.asSharedFlow()
@@ -32,7 +32,7 @@ class CreatePersonaViewModel @Inject constructor(
 
     // AI auto-generate
     fun generateAI(keywords: String) {
-        launchCatching {
+        launchCatching(block = {
             _event.emit(CreationEvent.Loading)
 
             try {
@@ -54,15 +54,17 @@ class CreatePersonaViewModel @Inject constructor(
                 throw e
             }
         }
+        )
     }
 
     // Save persona
     fun createPersona(name: String, story: String, traits: List<String>) {
         if (name.isBlank()) return
 
-        launchCatching {
+        launchCatching (block = {
             repository.addPersona(name, traits, story)
             _event.emit(CreationEvent.Success)
         }
+        )
     }
 }

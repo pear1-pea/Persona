@@ -1,11 +1,14 @@
 package com.example.persona.features.profile
 
+import android.content.Intent
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import com.example.persona.core.auth.AuthManager
 import com.example.persona.core.util.SettingsManager
 import com.example.persona.databinding.DialogSettingsBinding
+import com.example.persona.features.auth.AuthActivity
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
@@ -18,6 +21,9 @@ class SettingsBottomSheet : BottomSheetDialogFragment() {
 
     @Inject
     lateinit var settingsManager: SettingsManager
+
+    @Inject
+    lateinit var authManager: AuthManager
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -54,6 +60,13 @@ class SettingsBottomSheet : BottomSheetDialogFragment() {
                 settingsManager.saveThemeMode(selectedMode)
 
             }, 300)
+        }
+
+        binding.btnLogout.setOnClickListener {
+            authManager.logout()
+            val intent = Intent(requireActivity(), AuthActivity::class.java)
+            startActivity(intent)
+            requireActivity().finish()
         }
     }
 

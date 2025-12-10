@@ -12,19 +12,25 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.LinearLayoutManager
 import coil.load
-import coil.transform.CircleCropTransformation
+import com.example.persona.R
+import com.example.persona.core.auth.AuthManager
 import com.example.persona.core.util.observeErrorEvents
 import com.example.persona.databinding.FragmentProfileBinding
 import com.example.persona.features.chat.ChatActivity
 import com.example.persona.features.creation.CreatePersonaActivity
+import com.google.firebase.auth.FirebaseAuth
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
+import javax.inject.Inject
 
 @AndroidEntryPoint
 class ProfileFragment : Fragment() {
 
     private var _binding: FragmentProfileBinding? = null
     private val binding get() = _binding!!
+
+    @Inject
+    lateinit var authManager: AuthManager
 
     private val viewModel: ProfileViewModel by viewModels()
 
@@ -42,10 +48,18 @@ class ProfileFragment : Fragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
 
-        binding.ivUserAvatar.load("https://api.dicebear.com/7.x/avataaars/png?seed=MyCurrentUser") {
+        val currentUser = FirebaseAuth.getInstance().currentUser
+        binding.tvUserName.text = currentUser?.displayName ?: ""
+
+        val imageUrl = currentUser?.photoUrl
+        val fallbackUrl = "https://api.dicebear.com/7.x/avataaars/png?seed=MyCurrentUser"
+
+        binding.ivUserAvatar.load(imageUrl ?: fallbackUrl) {
             crossfade(true)
-            transformations(CircleCropTransformation())
+            placeholder(R.drawable.ic_launcher_background)
+            error(R.drawable.ic_launcher_background)
         }
+
         adapter = MyPersonaAdapter { persona ->
             // Tap a persona -> enter symbiosis mode (private chat)
             val intent = Intent(requireContext(), ChatActivity::class.java).apply {

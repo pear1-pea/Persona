@@ -5,9 +5,12 @@ import androidx.paging.PagingConfig
 import androidx.paging.PagingData
 import androidx.paging.map
 import com.example.persona.data.local.dao.MessageDao
+import com.example.persona.data.local.dao.PersonaDao
 import com.example.persona.data.mapper.toDomain
 import com.example.persona.data.mapper.toEntity
+import com.example.persona.data.mapper.toTraitEntities
 import com.example.persona.domain.model.Message
+import com.example.persona.domain.model.Persona
 import com.example.persona.domain.repository.ChatRepository
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -16,7 +19,8 @@ import javax.inject.Singleton
 
 @Singleton
 class RoomChatRepository @Inject constructor(
-    private val messageDao: MessageDao
+    private val messageDao: MessageDao,
+    private val personaDao: PersonaDao
 ) : ChatRepository {
 
     override fun getMessagesStream(personaId: String): Flow<PagingData<Message>> {
@@ -31,7 +35,8 @@ class RoomChatRepository @Inject constructor(
         }
     }
 
-    override suspend fun saveMessage(message: Message) {
+    override suspend fun saveMessage(message: Message, persona: Persona) {
+        personaDao.insertCompletePersona(persona.toEntity(), persona.toTraitEntities())
         messageDao.insertMessage(message.toEntity())
     }
 

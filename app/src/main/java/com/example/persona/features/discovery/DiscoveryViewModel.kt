@@ -1,7 +1,5 @@
 package com.example.persona.features.discovery
 
-import androidx.lifecycle.ViewModel
-import androidx.lifecycle.viewModelScope
 import com.example.persona.core.base.BaseViewModel
 import com.example.persona.data.repository.MockPersonaRepository
 import com.example.persona.domain.model.Persona
@@ -9,7 +7,6 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @HiltViewModel
@@ -30,10 +27,10 @@ class DiscoveryViewModel @Inject constructor(
     }
 
     private fun loadAllPersonas() {
-        launchCatching {
+        launchCatching(block = {
             allPersonas = repository.getPersonas()
             applyFilters()
-        }
+        })
     }
 
 
