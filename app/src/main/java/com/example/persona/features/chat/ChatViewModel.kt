@@ -55,12 +55,9 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    // Load current persona info
-    fun loadPersonaInfo(name: String) {
+    fun loadPersonaInfo(id: String) {
         launchCatching(block = {
-            val all = personaRepository.getPersonas() + personaRepository.getMyPersonas()
-            val found = all.find { it.name == name }
-            _currentPersona.value = found
+            _currentPersona.value = personaRepository.getPersonaById(id)
         })
     }
 

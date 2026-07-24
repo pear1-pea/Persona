@@ -67,6 +67,7 @@ class DiscoveryFragment : Fragment() {
     private fun setupRecyclerView() {
         adapter = DiscoveryAdapter { persona ->
             val intent = Intent(requireContext(), ChatActivity::class.java).apply {
+                putExtra("PERSONA_ID", persona.id)
                 putExtra("PERSONA_NAME", persona.name)
                 putExtra("IS_SYMBIOSIS", false)
             }

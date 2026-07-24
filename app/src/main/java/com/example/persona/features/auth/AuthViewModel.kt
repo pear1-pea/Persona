@@ -123,6 +123,18 @@ class AuthViewModel @Inject constructor(
         )
     }
 
+    fun signInAnonymously() {
+        launchCatching(
+            block = {
+                authManager.signInAnonymously()
+                _signInSuccess.emit(Unit)
+            },
+            onError = { error ->
+                emitError("游客模式启动失败: ${error.localizedMessage}")
+            }
+        )
+    }
+
     fun signIn(email: String, password: String) {
         launchCatching(
             block = {

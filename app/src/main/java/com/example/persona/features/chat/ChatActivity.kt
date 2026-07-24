@@ -46,12 +46,13 @@ class ChatActivity : AppCompatActivity() {
 
         observeErrorEvents(viewModel, binding.root)
 
+        val personaId = intent.getStringExtra("PERSONA_ID") ?: ""
         val personaName = intent.getStringExtra("PERSONA_NAME") ?: "AI"
         val isSymbiosis = intent.getBooleanExtra("IS_SYMBIOSIS", false)
 
         binding.tvChatTitle.text = personaName
 
-        viewModel.loadPersonaInfo(personaName)
+        viewModel.loadPersonaInfo(personaId)
 
         binding.rvChatMessages.layoutManager = LinearLayoutManager(this).apply {
             reverseLayout = true

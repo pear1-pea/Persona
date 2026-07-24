@@ -1,7 +1,7 @@
 package com.example.persona.features.discovery
 
 import com.example.persona.core.base.BaseViewModel
-import com.example.persona.data.repository.MockPersonaRepository
+import com.example.persona.domain.repository.PersonaRepository
 import com.example.persona.domain.model.Persona
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -11,7 +11,7 @@ import javax.inject.Inject
 
 @HiltViewModel
 class DiscoveryViewModel @Inject constructor(
-    private val repository: MockPersonaRepository
+    private val repository: PersonaRepository
 ) : BaseViewModel() {
 
     private var allPersonas: List<Persona> = emptyList()

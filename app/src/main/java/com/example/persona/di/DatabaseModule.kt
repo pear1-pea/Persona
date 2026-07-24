@@ -5,6 +5,7 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.persona.data.local.AppDatabase
+import com.example.persona.data.local.MIGRATION_2_3
 import com.example.persona.data.local.dao.MessageDao 
 import com.example.persona.data.local.dao.PersonaDao
 import com.example.persona.data.local.entity.PersonaEntity
@@ -45,7 +46,7 @@ object DatabaseModule {
                     }
                 }
             })
-            .fallbackToDestructiveMigration()
+            .addMigrations(MIGRATION_2_3)
             .build()
     }
 

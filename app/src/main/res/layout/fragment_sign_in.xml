@@ -91,6 +91,18 @@
         android:layout_height="wrap_content"
         android:layout_marginBottom="24dp"
         android:text="还没有账号？点击注册 "
+        app:layout_constraintBottom_toTopOf="@id/btn_guest"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <Button
+        android:id="@+id/btn_guest"
+        style="@style/Widget.MaterialComponents.Button.TextButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="16dp"
+        android:text="以游客身份体验"
+        android:textColor="?android:attr/textColorSecondary"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />

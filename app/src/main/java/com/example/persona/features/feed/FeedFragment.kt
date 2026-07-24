@@ -42,8 +42,8 @@ class FeedFragment : Fragment() {
         // Initialize adapter
         adapter = FeedAdapter { persona ->
             val intent = Intent(requireContext(), ChatActivity::class.java).apply {
+                putExtra("PERSONA_ID", persona.id)
                 putExtra("PERSONA_NAME", persona.name)
-                // Pass flag: false indicates normal mode; ChatViewModel will use cloud API
                 putExtra("IS_SYMBIOSIS", false)
             }
             startActivity(intent)

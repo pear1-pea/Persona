@@ -63,6 +63,7 @@ class ProfileFragment : Fragment() {
         adapter = MyPersonaAdapter { persona ->
             // Tap a persona -> enter symbiosis mode (private chat)
             val intent = Intent(requireContext(), ChatActivity::class.java).apply {
+                putExtra("PERSONA_ID", persona.id)
                 putExtra("PERSONA_NAME", persona.name)
                 putExtra("IS_SYMBIOSIS", true)
             }

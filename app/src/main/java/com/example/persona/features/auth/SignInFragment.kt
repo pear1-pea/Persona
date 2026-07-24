@@ -69,6 +69,10 @@ class SignInFragment : Fragment() {
             findNavController().navigate(action)
         }
 
+        binding.btnGuest.setOnClickListener {
+            viewModel.signInAnonymously()
+        }
+
         observeErrorEvents()
         observeSignInSuccess()
     }

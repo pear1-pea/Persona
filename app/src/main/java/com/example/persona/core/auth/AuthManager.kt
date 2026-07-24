@@ -60,6 +60,11 @@ class AuthManager @Inject constructor(
         ensureDisplayName()
     }
 
+    suspend fun signInAnonymously() {
+        auth.signInAnonymously().await()
+        ensureDisplayName()
+    }
+
     fun logout() {
         auth.signOut()
     }
