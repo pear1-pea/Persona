@@ -135,8 +135,6 @@ class SignInFragment : Fragment() {
         viewModel.signIn(email, password)
     }
 
-    //TODO: 完善错误处理
-
     private fun observeErrorEvents() {
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {

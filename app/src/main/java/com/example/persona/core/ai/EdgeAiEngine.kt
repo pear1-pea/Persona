@@ -10,8 +10,11 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.resume
@@ -21,46 +24,49 @@ class EdgeAiEngine @Inject constructor(
     @dagger.hilt.android.qualifiers.ApplicationContext private val context: Context
 ) {
 
+    @Volatile
     private var llmInference: LlmInference? = null
     private val modelName = "gemma-2b-it-cpu-int4.bin"
-
-    // intermediary channel
-    private var currentChannel: SendChannel<String>? = null
+    private val initMutex = Mutex()
+    private val generateMutex = Mutex()
+    private val channelRef = AtomicReference<SendChannel<String>?>(null)
 
     suspend fun initModel() = withContext(Dispatchers.IO) {
-        if (llmInference != null) return@withContext
+        initMutex.withLock {
+            if (llmInference != null) return@withLock
 
-        val modelFile = File(context.filesDir, modelName)
-        if (!modelFile.exists()) {
-            Log.e("EdgeAiEngine", "❌ 文件不存在")
-            return@withContext
-        }
+            val modelFile = File(context.filesDir, modelName)
+            if (!modelFile.exists()) {
+                Log.e("EdgeAiEngine", "❌ 文件不存在")
+                return@withLock
+            }
 
-        try {
-            Log.d("EdgeAiEngine", "🚀 开始加载 MediaPipe...")
-            val options = LlmInferenceOptions.builder()
-                .setModelPath(modelFile.absolutePath)
-                .setMaxTokens(1024)
-                .setTemperature(0.7f)
-                .setRandomSeed(1234)
-                .setResultListener { partialResult, done ->
-                    if (partialResult != null) {
-                        currentChannel?.trySend(partialResult)
+            try {
+                Log.d("EdgeAiEngine", "🚀 开始加载 MediaPipe...")
+                val options = LlmInferenceOptions.builder()
+                    .setModelPath(modelFile.absolutePath)
+                    .setMaxTokens(1024)
+                    .setTemperature(0.7f)
+                    .setRandomSeed(1234)
+                    .setResultListener { partialResult, done ->
+                        if (partialResult != null) {
+                            channelRef.get()?.trySend(partialResult)
+                        }
+                        if (done) {
+                            channelRef.get()?.close()
+                        }
                     }
-                    if (done) {
-                        currentChannel?.close()
+                    .setErrorListener { e ->
+                        Log.e("EdgeAiEngine", "❌ 内部错误: ${e.message}")
+                        channelRef.get()?.close(RuntimeException(e.message))
                     }
-                }
-                .setErrorListener { e ->
-                    Log.e("EdgeAiEngine", "❌ 内部错误: ${e.message}")
-                    currentChannel?.close(RuntimeException(e.message))
-                }
-                .build()
+                    .build()
 
-            llmInference = LlmInference.createFromOptions(context, options)
-            Log.d("EdgeAiEngine", "✅ MediaPipe 加载成功!")
-        } catch (e: Exception) {
-            Log.e("EdgeAiEngine", "❌ 加载崩溃", e)
+                llmInference = LlmInference.createFromOptions(context, options)
+                Log.d("EdgeAiEngine", "✅ MediaPipe 加载成功!")
+            } catch (e: Exception) {
+                Log.e("EdgeAiEngine", "❌ 加载崩溃", e)
+            }
         }
     }
 
@@ -82,27 +88,30 @@ class EdgeAiEngine @Inject constructor(
     }
 
     fun generateResponse(systemPrompt: String, userText: String): Flow<String> = callbackFlow {
-        if (llmInference == null) {
-            trySend("[Error] 模型未加载")
-            close()
-            return@callbackFlow
-        }
+        generateMutex.withLock {
+            if (llmInference == null) {
+                trySend("[Error] 模型未加载")
+                close()
+                return@callbackFlow
+            }
 
-        // register channel
-        currentChannel = channel
+            channelRef.set(channel)
 
-        val fullPrompt = "$systemPrompt\n\nUser: $userText\nModel:"
+            val fullPrompt = "$systemPrompt\n\nUser: $userText\nModel:"
 
-        try {
-            Log.d("EdgeAiEngine", "Generating response...")
-            llmInference?.generateResponseAsync(fullPrompt)
-        } catch (e: Exception) {
-            Log.e("EdgeAiEngine", "Generation Error", e)
-            close()
-        }
+            try {
+                Log.d("EdgeAiEngine", "Generating response...")
+                llmInference?.generateResponseAsync(fullPrompt)
+            } catch (e: Exception) {
+                Log.e("EdgeAiEngine", "Generation Error", e)
+                channelRef.set(null)
+                close(e)
+                return@callbackFlow
+            }
 
-        awaitClose {
-            currentChannel = null
+            awaitClose {
+                channelRef.set(null)
+            }
         }
     }
 }

@@ -101,6 +101,8 @@ class CloudPersonaRepository @Inject constructor(
                 .toObject(CloudPersonaEntity::class.java)
                 ?.toDomain()
         } catch (e: Exception) {
+            Log.e("CloudPersonaRepo", "Error fetching persona $id", e)
+            Firebase.crashlytics.recordException(e)
             null
         }
     }

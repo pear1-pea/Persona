@@ -26,7 +26,8 @@ class DownloadModelActivity : AppCompatActivity() {
     lateinit var settingsManager: SettingsManager
 
     companion object {
-        // Replace with actual CDN URL before release
+        // TODO: Replace with actual CDN URL before release
+        // See .claude/CLAUDE.md for CDN deployment instructions
         private const val MODEL_URL = "https://your-cdn.example.com/gemma-2b-it-cpu-int4.bin"
     }
 

@@ -29,7 +29,13 @@ class CloudChatRepository @Inject constructor(
             messages = messages
         )
 
-        val response = api.streamChat(request).execute()
+        val response = try {
+            api.streamChat(request).execute()
+        } catch (e: Exception) {
+            Log.e("ChatRepo", "Network error", e)
+            emit("Error: AI 脑子短路了...")
+            return@flow
+        }
 
         if (!response.isSuccessful) {
             Log.e("ChatRepo", "Error: ${response.errorBody()?.string()}")
