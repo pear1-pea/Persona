@@ -7,9 +7,9 @@ import retrofit2.http.Body
 import retrofit2.http.POST
 import retrofit2.http.Streaming
 
-interface VolcApi {
+interface DeepSeekApi {
 
-    @POST("api/v3/chat/completions")
-    @Streaming 
+    @POST("chat/completions")
+    @Streaming
     fun streamChat(@Body request: ChatRequest): Call<ResponseBody>
 }

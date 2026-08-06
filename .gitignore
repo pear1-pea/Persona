@@ -14,3 +14,12 @@
 .cxx
 local.properties
 app/google-services.json
+
+# Local agent / editor state
+/.claude/
+/.gradle-user/
+/.vscode/
+/.idea/appInsightsSettings.xml
+/.idea/deploymentTargetSelector.xml
+/.idea/material_theme_project_new.xml
+/.idea/studiobot.xml

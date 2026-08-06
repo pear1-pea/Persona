@@ -9,6 +9,7 @@ import com.example.persona.core.auth.AuthManager
 import com.example.persona.core.util.SettingsManager
 import com.example.persona.databinding.DialogSettingsBinding
 import com.example.persona.features.auth.AuthActivity
+import com.example.persona.features.download.DownloadModelActivity
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
@@ -67,6 +68,11 @@ class SettingsBottomSheet : BottomSheetDialogFragment() {
             val intent = Intent(requireActivity(), AuthActivity::class.java)
             startActivity(intent)
             requireActivity().finish()
+        }
+
+        binding.btnModelManager.setOnClickListener {
+            startActivity(Intent(requireContext(), DownloadModelActivity::class.java))
+            dismiss()
         }
     }
 

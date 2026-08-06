@@ -35,6 +35,12 @@ class RoomChatRepository @Inject constructor(
         }
     }
 
+    override suspend fun getRecentMessages(personaId: String, limit: Int): List<Message> {
+        return messageDao.getRecentMessagesByPersonaId(personaId, limit)
+            .asReversed()
+            .map { it.toDomain() }
+    }
+
     override suspend fun saveMessage(message: Message, persona: Persona) {
         personaDao.insertCompletePersona(persona.toEntity(), persona.toTraitEntities())
         messageDao.insertMessage(message.toEntity())

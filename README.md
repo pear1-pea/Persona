@@ -14,15 +14,15 @@
 
 **Persona** 是一个探索未来社交形态的 Android 实验性项目。在这个平台上，用户不再仅仅分享生活，而是能够创造、培养并扮演由 AI 驱动的“数字人格”。
 
-本项目旨在解决移动端 AI 应用的核心痛点：**隐私与能力的平衡**。通过构建一套**智能路由系统**，实现了 Google Gemma (端侧) 与 火山引擎 (云端) 的无缝协作，配合 **Room + Paging 3** 实现海量数据的本地持久化，打造了零延迟、高智商且具备记忆的社交体验。
+本项目旨在解决移动端 AI 应用的核心痛点：**隐私与能力的平衡**。通过构建一套**端云协同系统**，实现 MNN 本地模型与 DeepSeek 云端模型的可切换协作，配合 **Room + Paging 3** 实现本地持久化，打造低延迟、可离线演进且具备记忆的社交体验。
 
 ## ✨ 核心功能
 
 ### 1. 🤖 端云协同混合聊天 (Hybrid AI Chat)
 
-- **智能路由 (AI Router)** ：内置端侧“判官”模型，实时分析用户输入复杂度。
+- **智能路由 (AI Router)** ：支持本地优先与 `@cloud` 强制云端两种路径。
 
-  - 🟢 **绿灯 (Edge Mode)** ：日常闲聊、隐私对话由本地 Gemma 2B 毫秒级响应，零流量，零延迟。
+  - 🟢 **绿灯 (Local Mode)** ：第一阶段接入 MNN-LLM，本地运行 Qwen2.5 0.5B / 1.5B MNN 量化模型。
   - 🔵 **蓝灯 (Cloud Mode)** ：复杂逻辑、代码生成或 @cloud 指令自动无缝切换至云端大模型。
 - **流式响应 (Streaming)** ：全链路支持 SSE 流式输出，实现丝滑的“打字机”效果。
 - **富文本渲染**：支持 Markdown、代码高亮、表格渲染。
@@ -43,8 +43,8 @@
 - **架构模式**: MVVM 
 - **依赖注入**: Dagger Hilt
 - **异步处理**: Coroutines + Flow
-- **端侧 AI**: Google MediaPipe Tasks GenAI (Gemma 2B CPU Int4)
-- **云端 AI**: Retrofit + OkHttp (火山引擎 API)
+- **端侧 AI**: MNN-LLM (Qwen2.5 0.5B / 1.5B MNN 4-bit)
+- **云端 AI**: Retrofit + OkHttp (DeepSeek API)
 - **本地存储**: Room Database + Paging 3
 - **图片加载**: Coil
 - **UI 组件**: XML (ViewBinding), Material Design Components, Markwon
@@ -57,21 +57,29 @@
 
 ### 2. 配置 API Key
 
-在项目根目录下创建 local.properties 文件，添加你的火山引擎 (或兼容 OpenAI 格式) API Key：
+在项目根目录下创建 `local.properties` 文件，添加 DeepSeek 和 Authing 配置：
 
-### 3. 部署端侧模型 (关键步骤)
+    DEEPSEEK_API_KEY=sk-your-deepseek-key
+    DEEPSEEK_MODEL_ID=deepseek-v4-flash
+    AUTHING_APP_ID=6a7096f7a1934ab88b61704a
 
-由于 Gemma 2B 模型文件较大 (\~1.3GB)，未包含在 Git 仓库中。
+`DEEPSEEK_MODEL_ID` 和 `AUTHING_APP_ID` 都有默认值；本地调试至少需要填写 `DEEPSEEK_API_KEY`，否则 `@cloud` 会提示云端 Key 未配置。
 
-- 下载 **Gemma 2B IT CPU Int4** 模型 (.bin 格式) [下载链接](https://www.google.com/url?sa=E&q=https%3A%2F%2Fwww.kaggle.com%2Fmodels%2Fgoogle%2Fgemma%2FtensorFlow2%2Fgemma-2b-it-cpu-int4)。
-- 重命名文件为 gemma-2b-it-cpu-int4.bin。
-- 连接 Android 设备/模拟器。
-- 使用 Android Studio 的 **Device File Explorer**，将文件上传至：
-  /data/data/com.example.persona/files/gemma-2b-it-cpu-int4.bin
+### 3. 部署端侧模型 (第一阶段)
+
+第一阶段使用 MNN 预转换模型包，不再使用旧的 MediaPipe / Gemma `.bin` 文件。
+
+- 验证流程：下载 `taobao-mnn/Qwen2.5-0.5B-Instruct-MNN`。
+- 体验效果：下载 `taobao-mnn/Qwen2.5-1.5B-Instruct-MNN`。
+- 安装并运行 App 一次，让系统创建 App 专属目录。
+- 使用 Android Studio 的 **Device File Explorer**，将完整模型目录放到：
+  `/storage/emulated/0/Android/data/com.example.persona/files/models/qwen2.5-0.5b-instruct-mnn/`
+- 确保 `config.json` 直接位于该目录下，旁边保留模型包自带的 `.mnn`、权重和 tokenizer 文件。
+- 在 App 内进入 **Profile > Settings > 本地模型管理**，检查本地模型是否被识别。
 
 ### 4. 运行
 
-Sync Gradle 并运行 App。
+Sync Gradle 并运行 App。当前项目固定使用 NDK `27.0.11718014`；如果 Android Studio 仍尝试使用缺失 `source.properties` 的 `27.0.12077973`，请先在 SDK Manager 里卸载或重装该坏 NDK 包。MNN 源码会优先从 `third_party/MNN` 读取；没有本地源码时，CMake 会下载官方 `3.6.1` 源码压缩包，不再执行同步期 `git clone`。
 
 注意：模拟器建议分配 4GB 以上 RAM，否则加载端侧模型可能导致 OOM。
 
@@ -82,7 +90,7 @@ Sync Gradle 并运行 App。
 - **[架构演进] 分布式多租户架构 (Multi-Tenant Architecture)**
 
   - 从当前的“单机沙盒”模式演进为支持多用户并发的云端系统。
-  - 实现基于 **Firebase Auth / OAuth 2.0** 的身份认证与数据隔离。
+  - 延续 **Authing** 登录体系，并在后续后端中实现用户身份与数据隔离。
   - 构建 **Sync Adapter**，实现本地 Room 数据库与云端数据库的双向增量同步，让用户的数字分身在多端无缝漫游。
 - **[前沿探索] 端侧 Agent 编排与 MoE (Mixture of Experts) 机制**
 

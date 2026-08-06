@@ -72,4 +72,16 @@ class RoomChatRepositoryTest {
 
         assert(flow is kotlinx.coroutines.flow.Flow)
     }
+
+    @Test
+    fun `getRecentMessages returns chronological domain messages`() = runTest {
+        val newest = MessageEntity("m2", "p1", "New", false, 2000L)
+        val oldest = MessageEntity("m1", "p1", "Old", true, 1000L)
+        whenever(messageDao.getRecentMessagesByPersonaId("p1", 2)).thenReturn(listOf(newest, oldest))
+
+        val messages = repo.getRecentMessages("p1", 2)
+
+        assertEquals(listOf("Old", "New"), messages.map { it.content })
+        verify(messageDao).getRecentMessagesByPersonaId("p1", 2)
+    }
 }

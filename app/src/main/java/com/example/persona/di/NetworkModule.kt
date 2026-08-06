@@ -1,7 +1,8 @@
 package com.example.persona.di
 
 import com.example.persona.BuildConfig
-import com.example.persona.data.remote.VolcApi
+import com.example.persona.data.remote.DeepSeekApi
+import com.example.persona.data.remote.DeepSeekConfig
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -21,11 +22,20 @@ object NetworkModule {
     // Configure interceptors
     @Provides
     @Singleton
-    fun provideOkHttpClient(): OkHttpClient {
+    fun provideDeepSeekConfig(): DeepSeekConfig {
+        return DeepSeekConfig(
+            apiKey = BuildConfig.DEEPSEEK_API_KEY,
+            modelId = BuildConfig.DEEPSEEK_MODEL_ID,
+        )
+    }
+
+    @Provides
+    @Singleton
+    fun provideOkHttpClient(config: DeepSeekConfig): OkHttpClient {
         val authInterceptor = Interceptor { chain ->
             val original = chain.request()
             val request = original.newBuilder()
-                .header("Authorization", "Bearer ${BuildConfig.VOLC_API_KEY}") // automatically insert API key
+                .header("Authorization", "Bearer ${config.apiKey}")
                 .header("Content-Type", "application/json")
                 .build()
             chain.proceed(request)
@@ -47,14 +57,14 @@ object NetworkModule {
     @Singleton
     fun provideRetrofit(client: OkHttpClient): Retrofit {
         return Retrofit.Builder()
-                .baseUrl("https://ark.cn-beijing.volces.com/") // Volc engine Base URL
+                .baseUrl("https://api.deepseek.com/")
             .client(client)
             .addConverterFactory(GsonConverterFactory.create())
             .build()
     }
     @Provides
     @Singleton
-    fun provideVolcApi(retrofit: Retrofit): VolcApi {
-        return retrofit.create(VolcApi::class.java)
+    fun provideDeepSeekApi(retrofit: Retrofit): DeepSeekApi {
+        return retrofit.create(DeepSeekApi::class.java)
     }
 }

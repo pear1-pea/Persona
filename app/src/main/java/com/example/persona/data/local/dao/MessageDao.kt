@@ -14,6 +14,9 @@ interface MessageDao {
     @Query("SELECT * FROM messages WHERE personaId = :personaId ORDER BY timestamp DESC")
     fun getMessagesByPersonaId(personaId: String): PagingSource<Int, MessageEntity>
 
+    @Query("SELECT * FROM messages WHERE personaId = :personaId ORDER BY timestamp DESC LIMIT :limit")
+    suspend fun getRecentMessagesByPersonaId(personaId: String, limit: Int): List<MessageEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertMessage(message: MessageEntity)
 

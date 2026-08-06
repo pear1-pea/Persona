@@ -13,13 +13,14 @@ import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.LinearLayoutManager
 import coil.load
 import com.example.persona.R
+import com.example.persona.core.auth.AuthUser
 import com.example.persona.core.auth.AuthManager
 import com.example.persona.core.util.observeErrorEvents
 import com.example.persona.databinding.FragmentProfileBinding
 import com.example.persona.features.chat.ChatActivity
 import com.example.persona.features.creation.CreatePersonaActivity
-import com.google.firebase.auth.FirebaseAuth
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -48,16 +49,20 @@ class ProfileFragment : Fragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
 
-        val currentUser = FirebaseAuth.getInstance().currentUser
-        binding.tvUserName.text = currentUser?.displayName ?: ""
-
-        val imageUrl = currentUser?.photoUrl
         val fallbackUrl = "https://api.dicebear.com/7.x/avataaars/png?seed=MyCurrentUser"
 
-        binding.ivUserAvatar.load(imageUrl ?: fallbackUrl) {
-            crossfade(true)
-            placeholder(R.drawable.ic_launcher_background)
-            error(R.drawable.ic_launcher_background)
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                launch {
+                    authManager.currentUser.collect { user ->
+                        renderUser(user, fallbackUrl)
+                    }
+                }
+
+                launch {
+                    authManager.refreshCurrentUser()
+                }
+            }
         }
 
         adapter = MyPersonaAdapter { persona ->
@@ -104,5 +109,16 @@ class ProfileFragment : Fragment() {
     override fun onDestroyView() {
         super.onDestroyView()
         _binding = null
+    }
+
+    private fun renderUser(user: AuthUser?, fallbackUrl: String) {
+        binding.tvUserName.text = user?.nickname ?: user?.name ?: ""
+
+        val imageUrl = user?.photo ?: user?.picture
+        binding.ivUserAvatar.load(imageUrl ?: fallbackUrl) {
+            crossfade(true)
+            placeholder(R.drawable.ic_launcher_background)
+            error(R.drawable.ic_launcher_background)
+        }
     }
 }

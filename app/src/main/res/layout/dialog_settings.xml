@@ -9,19 +9,19 @@
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
+        android:layout_marginBottom="16dp"
         android:text="Settings"
         android:textColor="@color/text_primary"
         android:textSize="20sp"
-        android:textStyle="bold"
-        android:layout_marginBottom="16dp"/>
+        android:textStyle="bold" />
 
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
+        android:layout_marginBottom="8dp"
         android:text="Theme Preference"
         android:textColor="@color/primary_purple"
-        android:textStyle="bold"
-        android:layout_marginBottom="8dp"/>
+        android:textStyle="bold" />
 
     <RadioGroup
         android:id="@+id/radioGroupTheme"
@@ -32,26 +32,33 @@
             android:id="@+id/rbLight"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Light Mode ☀️"
-            android:textColor="@color/text_primary"
-            android:padding="12dp" />
+            android:padding="12dp"
+            android:text="Light Mode"
+            android:textColor="@color/text_primary" />
 
         <RadioButton
             android:id="@+id/rbDark"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Dark Mode 🌙"
-            android:textColor="@color/text_primary"
-            android:padding="12dp" />
+            android:padding="12dp"
+            android:text="Dark Mode"
+            android:textColor="@color/text_primary" />
 
         <RadioButton
             android:id="@+id/rbSystem"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Follow System ⚙️"
-            android:textColor="@color/text_primary"
-            android:padding="12dp" />
+            android:padding="12dp"
+            android:text="Follow System"
+            android:textColor="@color/text_primary" />
     </RadioGroup>
+
+    <Button
+        android:id="@+id/btnModelManager"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:text="&#26412;&#22320;&#27169;&#22411;&#31649;&#29702;" />
 
     <Button
         android:id="@+id/btnLogout"
@@ -60,13 +67,12 @@
         android:layout_marginTop="16dp"
         android:text="Log Out" />
 
-    <!--additional settings to be added later -->
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
         android:text="More settings coming soon..."
         android:textColor="@color/text_secondary"
-        android:textSize="12sp"
-        android:layout_marginTop="24dp"/>
+        android:textSize="12sp" />
 
 </LinearLayout>

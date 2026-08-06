@@ -12,6 +12,7 @@ plugins {
 android {
     namespace = "com.example.persona"
     compileSdk = 36
+    ndkVersion = "27.0.11718014"
 
     defaultConfig {
         applicationId = "com.example.persona"
@@ -22,11 +23,38 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        val properties = Properties()
-        properties.load(project.rootProject.file("local.properties").inputStream())
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
 
-        buildConfigField("String", "VOLC_API_KEY", properties.getProperty("VOLC_API_KEY"))
-        buildConfigField("String", "VOLC_MODEL_ID", properties.getProperty("VOLC_MODEL_ID"))
+        externalNativeBuild {
+            cmake {
+                cppFlags += "-std=c++17"
+                arguments += listOf("-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON")
+            }
+        }
+
+        val properties = Properties()
+        val localPropertiesFile = project.rootProject.file("local.properties")
+        if (localPropertiesFile.exists()) {
+            properties.load(localPropertiesFile.inputStream())
+        }
+
+        fun localBuildConfigString(name: String, defaultValue: String = ""): String {
+            val rawValue = properties.getProperty(name)?.trim()?.removeSurrounding("\"") ?: defaultValue
+            val escapedValue = rawValue
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+            return "\"$escapedValue\""
+        }
+
+        buildConfigField("String", "DEEPSEEK_API_KEY", localBuildConfigString("DEEPSEEK_API_KEY"))
+        buildConfigField("String", "DEEPSEEK_MODEL_ID", localBuildConfigString("DEEPSEEK_MODEL_ID", "deepseek-v4-flash"))
+        buildConfigField(
+            "String",
+            "AUTHING_APP_ID",
+            localBuildConfigString("AUTHING_APP_ID", "6a7096f7a1934ab88b61704a")
+        )
 
     }
 
@@ -46,6 +74,13 @@ android {
     kotlinOptions {
         jvmTarget = "11"
     }
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
+
     buildFeatures {
         viewBinding = true
         buildConfig = true
@@ -62,14 +97,11 @@ dependencies {
     implementation(libs.androidx.activity)
     implementation(libs.androidx.constraintlayout)
 
-    implementation("androidx.credentials:credentials:1.3.0")
-    implementation("androidx.credentials:credentials-play-services-auth:1.3.0")
+    implementation("cn.authing:guard:+")
 
-    val nav_version = "2.8.0"
-    implementation("androidx.navigation:navigation-fragment-ktx:$nav_version")
-    implementation("androidx.navigation:navigation-ui-ktx:$nav_version")
-
-//    implementation("com.google.android.material:material:1.11.0")
+    val navVersion = "2.8.0"
+    implementation("androidx.navigation:navigation-fragment-ktx:$navVersion")
+    implementation("androidx.navigation:navigation-ui-ktx:$navVersion")
 
     implementation("de.hdodenhof:circleimageview:3.1.0")
     implementation("io.coil-kt:coil:2.6.0")
@@ -77,43 +109,36 @@ dependencies {
     implementation("com.google.dagger:hilt-android:2.51.1")
     kapt("com.google.dagger:hilt-android-compiler:2.51.1")
 
-    // Lifecycle & ViewModel
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.0")
     implementation("androidx.lifecycle:lifecycle-livedata-ktx:2.8.0")
-    implementation("androidx.fragment:fragment-ktx:1.8.0") //为了 viewModels() 委托
+    implementation("androidx.fragment:fragment-ktx:1.8.0")
     implementation("androidx.activity:activity-ktx:1.9.0")
 
     implementation("com.squareup.retrofit2:retrofit:2.9.0")
-    implementation("com.squareup.retrofit2:converter-gson:2.9.0") // JSON转对象
-    implementation("com.squareup.okhttp3:logging-interceptor:4.11.0") // 打印日志，方便调试
+    implementation("com.squareup.retrofit2:converter-gson:2.9.0")
+    implementation("com.squareup.okhttp3:logging-interceptor:4.11.0")
 
-    // Markdown 渲染
     implementation("io.noties.markwon:core:4.6.2")
-    implementation("io.noties.markwon:ext-strikethrough:4.6.2") // 删除线
-    implementation("io.noties.markwon:ext-tables:4.6.2")        // 表格
-    implementation("io.noties.markwon:ext-tasklist:4.6.2")      // 任务列表
-    implementation("io.noties.markwon:html:4.6.2")              // HTML 支持
-    implementation("io.noties.markwon:image-coil:4.6.2")        // 图片支持 (配合 Coil)
+    implementation("io.noties.markwon:ext-strikethrough:4.6.2")
+    implementation("io.noties.markwon:ext-tables:4.6.2")
+    implementation("io.noties.markwon:ext-tasklist:4.6.2")
+    implementation("io.noties.markwon:html:4.6.2")
+    implementation("io.noties.markwon:image-coil:4.6.2")
 
-    implementation("com.google.mediapipe:tasks-genai:0.10.14")
+    val roomVersion = "2.6.1"
+    implementation("androidx.room:room-runtime:$roomVersion")
+    implementation("androidx.room:room-ktx:$roomVersion")
+    kapt("androidx.room:room-compiler:$roomVersion")
 
-    val room_version = "2.6.1"
-    implementation("androidx.room:room-runtime:$room_version")
-    implementation("androidx.room:room-ktx:$room_version") // 支持协程
-    kapt("androidx.room:room-compiler:$room_version")
-
-    val paging_version = "3.3.0" // 使用较新版本
-    implementation("androidx.paging:paging-runtime:$paging_version")
-    implementation("androidx.room:room-paging:2.6.1")// 编译器
+    val pagingVersion = "3.3.0"
+    implementation("androidx.paging:paging-runtime:$pagingVersion")
+    implementation("androidx.room:room-paging:$roomVersion")
 
     implementation(platform("com.google.firebase:firebase-bom:33.0.0"))
-    implementation("com.google.firebase:firebase-auth-ktx")
     implementation("com.google.firebase:firebase-firestore-ktx")
     implementation("com.google.firebase:firebase-analytics-ktx")
-    implementation ("com.google.firebase:firebase-crashlytics-ktx")
+    implementation("com.google.firebase:firebase-crashlytics-ktx")
 
-//    implementation("com.google.android.gms:play-services-auth:21.2.0")
-    implementation("com.google.android.libraries.identity.googleid:googleid:1.1.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.8.1")
 
     testImplementation(libs.junit)
@@ -122,5 +147,4 @@ dependencies {
     testImplementation("androidx.arch.core:core-testing:2.2.0")
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
-
 }
