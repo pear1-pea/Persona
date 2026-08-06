@@ -17,6 +17,7 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import coil.load
 import coil.transform.CircleCropTransformation
 import com.example.persona.R
+import com.example.persona.core.ai.EngineState
 import com.example.persona.core.util.MarkdownHelper
 import com.example.persona.core.util.observeErrorEvents
 import com.example.persona.databinding.ActivityChatBinding
@@ -48,7 +49,6 @@ class ChatActivity : AppCompatActivity() {
 
         val personaId = intent.getStringExtra("PERSONA_ID") ?: ""
         val personaName = intent.getStringExtra("PERSONA_NAME") ?: "AI"
-        val isSymbiosis = intent.getBooleanExtra("IS_SYMBIOSIS", false)
 
         binding.tvChatTitle.text = personaName
 
@@ -84,8 +84,33 @@ class ChatActivity : AppCompatActivity() {
                 launch {
                     viewModel.isCloudMode.collect { isCloud ->
                         binding.indicatorCard.setCardBackgroundColor(if (isCloud) ContextCompat.getColor(this@ChatActivity, R.color.accent_cyan) else "#4CAF50".toColorInt())
-                        binding.tvModeLabel.text = if (isCloud) "CLOUD" else "EDGE"
+                        binding.tvModeLabel.text = if (isCloud) "CLOUD" else "LOCAL"
                         binding.tvModeLabel.setTextColor(if (isCloud) ContextCompat.getColor(this@ChatActivity, R.color.text_secondary) else "#4CAF50".toColorInt())
+                    }
+                }
+
+                launch {
+                    viewModel.localEngineState.collect { state ->
+                        binding.tvChatStatus.text = when (state) {
+                            EngineState.Idle -> "CLOUD READY"
+                            EngineState.Initializing -> "LOCAL LOADING"
+                            EngineState.Ready -> "LOCAL READY"
+                            is EngineState.Error -> "CLOUD FALLBACK"
+                        }
+                        binding.tvChatStatus.setTextColor(
+                            if (state == EngineState.Ready) "#4CAF50".toColorInt()
+                            else ContextCompat.getColor(this@ChatActivity, R.color.accent_cyan)
+                        )
+                    }
+                }
+
+                launch {
+                    viewModel.isGenerating.collect { isGenerating ->
+                        binding.btnSend.setImageResource(
+                            if (isGenerating) android.R.drawable.ic_menu_close_clear_cancel
+                            else android.R.drawable.ic_menu_send
+                        )
+                        binding.btnSend.contentDescription = if (isGenerating) "停止生成" else "发送消息"
                     }
                 }
 
@@ -104,9 +129,14 @@ class ChatActivity : AppCompatActivity() {
         }
 
         binding.btnSend.setOnClickListener {
+            if (viewModel.isGenerating.value) {
+                viewModel.stopGenerating()
+                return@setOnClickListener
+            }
+
             val text = binding.etMessage.text.toString().trim()
             if (text.isNotEmpty()) {
-                viewModel.sendMessage(text, isSymbiosis)
+                viewModel.sendMessage(text)
                 binding.etMessage.setText("")
             }
         }
@@ -125,5 +155,10 @@ class ChatActivity : AppCompatActivity() {
         val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
         imm.hideSoftInputFromWindow(view.windowToken, 0)
         view.clearFocus()
+    }
+
+    override fun onDestroy() {
+        viewModel.stopGenerating()
+        super.onDestroy()
     }
 }

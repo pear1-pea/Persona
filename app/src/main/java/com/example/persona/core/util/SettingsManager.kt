@@ -15,7 +15,6 @@ class SettingsManager @Inject constructor(
 
     companion object {
         const val KEY_THEME_MODE = "theme_mode"
-        const val KEY_EDGE_MODEL_SKIPPED = "edge_model_skipped"
 
         const val THEME_SYSTEM = AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM
         const val THEME_LIGHT = AppCompatDelegate.MODE_NIGHT_NO
@@ -34,10 +33,4 @@ class SettingsManager @Inject constructor(
     fun applyTheme(mode: Int) {
         AppCompatDelegate.setDefaultNightMode(mode)
     }
-
-    fun setEdgeModelSkipped(skipped: Boolean) {
-        prefs.edit().putBoolean(KEY_EDGE_MODEL_SKIPPED, skipped).apply()
-    }
-
-    fun isEdgeModelSkipped(): Boolean = prefs.getBoolean(KEY_EDGE_MODEL_SKIPPED, false)
 }
