@@ -20,5 +20,6 @@ app/google-services.json
 /.gradle-user/
 /.vscode/
 /.idea/appInsightsSettings.xml
+/.idea/deploymentTargetSelector.xml
 /.idea/material_theme_project_new.xml
 /.idea/studiobot.xml
