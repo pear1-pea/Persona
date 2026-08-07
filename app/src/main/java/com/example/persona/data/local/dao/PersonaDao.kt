@@ -5,6 +5,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
+import androidx.room.Upsert
 import com.example.persona.data.local.entity.PersonaEntity
 import com.example.persona.data.local.entity.PersonaWithTraits
 import com.example.persona.data.local.entity.TraitEntity
@@ -20,15 +21,19 @@ interface PersonaDao {
     @Query("SELECT * FROM personas WHERE creatorId = :creatorId")
     suspend fun getPersonasByCreator(creatorId: String): List<PersonaWithTraits>
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Upsert
     suspend fun insertPersona(persona: PersonaEntity)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertTraits(traits: List<TraitEntity>)
 
+    @Query("DELETE FROM traits WHERE personaId = :personaId")
+    suspend fun deleteTraitsByPersonaId(personaId: String)
+
     @Transaction
     suspend fun insertCompletePersona(persona: PersonaEntity, traits: List<TraitEntity>) {
         insertPersona(persona)
+        deleteTraitsByPersonaId(persona.id)
         insertTraits(traits)
     }
 

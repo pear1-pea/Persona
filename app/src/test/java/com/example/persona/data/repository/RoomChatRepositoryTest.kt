@@ -1,11 +1,7 @@
 package com.example.persona.data.repository
 
 import com.example.persona.data.local.dao.MessageDao
-import com.example.persona.data.local.dao.PersonaDao
 import com.example.persona.data.local.entity.MessageEntity
-import com.example.persona.data.local.entity.PersonaEntity
-import com.example.persona.data.local.entity.PersonaWithTraits
-import com.example.persona.data.local.entity.TraitEntity
 import com.example.persona.domain.model.Message
 import com.example.persona.domain.model.Persona
 import kotlinx.coroutines.test.runTest
@@ -21,26 +17,22 @@ import org.mockito.kotlin.whenever
 class RoomChatRepositoryTest {
 
     private val messageDao: MessageDao = mock()
-    private val personaDao: PersonaDao = mock()
     private lateinit var repo: RoomChatRepository
 
     private val samplePersona = Persona("p1", "Test", "", "", listOf("A"), "Backstory", "me")
-    private val personaEntity = PersonaEntity("p1", "Test", "", "", "Backstory", "me")
-    private val personaWithTraits = PersonaWithTraits(persona = personaEntity, traits = emptyList())
     private val messageEntity = MessageEntity("m1", "p1", "Hello", true, 1000L)
 
     @Before
     fun setUp() {
-        repo = RoomChatRepository(messageDao, personaDao)
+        repo = RoomChatRepository(messageDao)
     }
 
     @Test
-    fun `saveMessage inserts persona and message`() = runTest {
+    fun `saveMessage inserts only message`() = runTest {
         val message = Message("m1", "p1", "Hello", true, 1000L)
 
         repo.saveMessage(message, samplePersona)
 
-        verify(personaDao).insertCompletePersona(any<PersonaEntity>(), any<List<TraitEntity>>())
         verify(messageDao).insertMessage(any<MessageEntity>())
     }
 
