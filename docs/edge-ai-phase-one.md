@@ -11,8 +11,8 @@
 | `ChatViewModel` | 只负责发送消息、创建 `GenerationSession`、保存用户/AI 消息、收 token、停止当前生成，并暴露生成中状态。 | 保留并改造生成控制。 |
 | `HybridAiRepository` | 只负责本地/云端路由：本地 ready 走 LOCAL，`@cloud` 或本地不可用走 CLOUD，本地失败后兜底云端。 | 保留并收窄职责。 |
 | `EdgeAiEngine` | 旧 MediaPipe/Gemma 路径。 | 第一阶段不再作为主链路依赖。 |
-| `ModelDownloadManager` | 旧单文件 `gemma-2b-it-cpu-int4.bin` 下载逻辑。 | 第一阶段废弃，第二阶段再做完整模型管理。 |
-| `DownloadModelActivity` | 临时模型管理页，只检查手动放置的 MNN 模型和设备推荐。 | 保留页面，避免阻塞登录/聊天。 |
+| `ModelDownloadManager` | 旧单文件 `gemma-2b-it-cpu-int4.bin` 下载逻辑。 | 第一阶段废弃，后续下载系统单独做。 |
+| `ModelManagementActivity` | 本地模型管理页，扫描标准 models 目录、校验 manifest、选择/删除模型。 | M2 已接管模型管理。 |
 | `CloudChatRepository` | DeepSeek SSE 云端聊天路径。 | 保留为兜底和 `@cloud` 强制路径。 |
 | `SettingsManager` | 主题等应用设置。 | 保留，不混入模型运行状态。 |
 
@@ -25,7 +25,7 @@
 - MNN 实现位于 `core/ai/mnn/`：`MnnLocalAiEngine` 负责 Kotlin Flow 和状态流，`NativeMnnSession` 封装 JNI create/load/generate/stop/destroy。
 - JNI 入口位于 `app/src/main/cpp/mnn_jni.cpp`，CMake 优先使用 `third_party/MNN`，目标输出 `libpersona_mnn.so`。
 - MNN 生成链路按官方 Android demo 的 stepping 模式执行：`response(..., 0)` 做 prefill，再循环 `generate(1)`，同时处理 Android 运行时每步可能出现的中间 `<eop>`。
-- 当前 Qwen2.5 MNN 模型包没有可用的 Jinja chat template，JNI 会按照模型 `llm_config.json` 的 ChatML 约定显式渲染 system/user/assistant 消息，并让 Prompt Cache 使用同一份文本。
+- Prompt 渲染已从 JNI 下沉风险区移到 Kotlin `PromptAdapter` 层：Qwen 默认走 `QWEN_CHATML_TEXT` RawText 路径，JNI 只负责把 RawText 或 ChatMessages 搬到 MNN Runtime。
 - `LocalModelManager` 扫描 App 专属 `models` 目录，避免业务代码到处传裸 `modelDir` 字符串。
 - 官方 `Llm::response` / `generate(1)` 通过 `ostream` 写出每个生成步的增量解码片段；Kotlin 层只截断 `<eop>`，不做累计前缀去重，避免连续相同字符被误删。
 - 生成开始后会记录 MNN 当前 KV/history 位置；正常完成才 `syncPromptCache`，用户停止时调用 `eraseHistory` 回滚 native 内部状态，避免下一轮聊天吃到未落库的残留上下文。
@@ -40,20 +40,17 @@
 /storage/emulated/0/Android/data/com.example.persona/files/models/qwen2.5-0.5b-instruct-mnn/
 ```
 
-开发调试也会扫描内部目录：
+开发阶段不再兼容旧内部目录或嵌套目录。模型目录内至少需要直接包含：
 
 ```text
-/data/data/com.example.persona/files/models/qwen2.5-0.5b-instruct-mnn/
-```
-
-模型目录内至少需要直接包含：
-
-```text
+manifest.json
 config.json
 llm.mnn
+llm_embeddings.mnn / weight 相关文件
+tokenizer.model
 ```
 
-如果压缩包解压后多出一层同名目录，扫描器会兼容一层嵌套。
+`manifest.json` 必须包含 M2.5 字段：`family`、`promptFormat` 和 `contextWindow`。
 
 ## 推荐模型
 
@@ -99,15 +96,14 @@ llm.mnn
 
 ## 暂不处理
 
-- 完整模型管理页
 - 远程 manifest
 - 下载/校验/解压/断点续传
-- 模型升级和删除
+- 模型升级
 - 多后端 Factory 或 AiRuntime
 - 复杂 ChatMode 策略
 - 模型导入/导出和模型市场
 
 ## 当前待验收项
 
-- 本地模型测试页曾出现连续重复输出，已修复为显式 ChatML 提示词渲染，并重新通过 `assembleDebug`。仍需在真机验证单轮、连续多轮以及停止后立即重发。
+- 本地模型测试页曾出现连续重复输出，已修复为显式 ChatML 提示词渲染；M2.5 已将 Prompt 适配层独立出来，仍需在真机验证单轮、连续多轮以及停止后立即重发。
 - 云端兜底代码已切换为 DeepSeek SSE 接口。未填写 `DEEPSEEK_API_KEY` 时，`@cloud` 会显示明确的配置提示；填写有效 Key 后再验收 `@cloud` 和本地失败兜底。

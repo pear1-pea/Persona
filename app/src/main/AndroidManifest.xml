@@ -18,7 +18,7 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Persona">
         <activity
-            android:name=".features.download.DownloadModelActivity"
+            android:name=".features.model.ModelManagementActivity"
             android:exported="false" />
         <activity
             android:name=".features.creation.CreatePersonaActivity"

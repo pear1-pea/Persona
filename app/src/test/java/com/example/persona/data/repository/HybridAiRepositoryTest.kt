@@ -7,6 +7,8 @@ import com.example.persona.core.ai.GenerationSession
 import com.example.persona.core.ai.InstalledModel
 import com.example.persona.core.ai.LocalAiEngine
 import com.example.persona.core.ai.LocalModelManager
+import com.example.persona.core.ai.ModelFamilies
+import com.example.persona.core.ai.PromptFormats
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flow
@@ -76,6 +78,39 @@ class HybridAiRepositoryTest {
     @Test
     fun `force cloud bypasses ready local engine`() {
         assertEquals(HybridAiRepository.Mode.CLOUD, repository.selectMode(true, true))
+    }
+
+    @Test
+    fun `generation mode initializes selected local model before choosing local`() = runTest {
+        engineState.value = EngineState.Idle
+        whenever(localEngine.initialize(sampleModel())).thenReturn(true)
+
+        val mode = repository.selectModeForGeneration(forceCloud = false)
+
+        assertEquals(HybridAiRepository.Mode.LOCAL, mode)
+        assertEquals(HybridAiRepository.Mode.LOCAL, repository.activeMode.value)
+        verify(localEngine).initialize(sampleModel())
+    }
+
+    @Test
+    fun `generation mode falls back to cloud when selected local model fails to initialize`() = runTest {
+        engineState.value = EngineState.Idle
+        whenever(localEngine.initialize(sampleModel())).thenReturn(false)
+
+        val mode = repository.selectModeForGeneration(forceCloud = false)
+
+        assertEquals(HybridAiRepository.Mode.CLOUD, mode)
+        assertEquals(HybridAiRepository.Mode.CLOUD, repository.activeMode.value)
+        verify(localEngine).initialize(sampleModel())
+    }
+
+    @Test
+    fun `generation mode force cloud bypasses local initialization`() = runTest {
+        val mode = repository.selectModeForGeneration(forceCloud = true)
+
+        assertEquals(HybridAiRepository.Mode.CLOUD, mode)
+        assertEquals(HybridAiRepository.Mode.CLOUD, repository.activeMode.value)
+        verify(localEngine, org.mockito.kotlin.never()).initialize(any())
     }
 
     @Test
@@ -211,6 +246,9 @@ class HybridAiRepositoryTest {
         name = "Qwen2.5 0.5B Instruct",
         version = "local",
         modelDir = "/models/qwen2.5-0.5b-instruct-mnn",
-        backend = Backend.MNN
+        backend = Backend.MNN,
+        family = ModelFamilies.QWEN2_5,
+        promptFormat = PromptFormats.QWEN_CHATML_TEXT,
+        contextWindow = 4096
     )
 }

@@ -148,7 +148,7 @@ class ChatViewModel @Inject constructor(
             persona
         )
 
-        val mode = hybridRepository.selectMode(forceCloud)
+        val mode = hybridRepository.selectModeForGeneration(forceCloud)
         _isCloudMode.value = mode == HybridAiRepository.Mode.CLOUD
         val systemPrompt = "You are ${persona.name}. ${persona.backstory}. " +
             "Traits: ${persona.traits.joinToString()}. Reply in the user's language."

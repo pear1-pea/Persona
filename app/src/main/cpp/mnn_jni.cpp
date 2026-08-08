@@ -14,6 +14,8 @@
 
 namespace {
 
+constexpr const char* DEFAULT_STOP_WORD = "<eop>";
+
 class CallbackStreamBuffer final : public std::streambuf {
 public:
     explicit CallbackStreamBuffer(std::function<void(const std::string&)> callback)
@@ -77,6 +79,12 @@ struct MnnSession {
     }
 };
 
+struct StopMatch {
+    bool found = false;
+    size_t position = std::string::npos;
+    std::string value;
+};
+
 std::string toString(JNIEnv* env, jstring value) {
     if (value == nullptr) return {};
     const char* chars = env->GetStringUTFChars(value, nullptr);
@@ -85,43 +93,78 @@ std::string toString(JNIEnv* env, jstring value) {
     return result;
 }
 
-// The Qwen MNN package has no Jinja chat template. Render its ChatML prompt
-// explicitly before the tokenizer's fallback concatenates message contents.
-std::string formatChatMessage(const std::string& role, const std::string& content) {
-    return "<|im_start|>" + role + "\n" + content + "<|im_end|>\n";
+std::vector<std::string> toStringVector(JNIEnv* env, jobjectArray values) {
+    std::vector<std::string> result;
+    if (values == nullptr) return result;
+
+    const auto size = env->GetArrayLength(values);
+    result.reserve(static_cast<size_t>(size));
+    for (jsize index = 0; index < size; ++index) {
+        auto value = static_cast<jstring>(env->GetObjectArrayElement(values, index));
+        result.push_back(toString(env, value));
+        env->DeleteLocalRef(value);
+    }
+    return result;
 }
 
-std::string formatUserPrompt(const std::string& content) {
-    return formatChatMessage("user", content) + "<|im_start|>assistant\n";
+std::vector<std::string> toStopWords(JNIEnv* env, jobjectArray values) {
+    auto stopWords = toStringVector(env, values);
+    stopWords.erase(
+        std::remove_if(stopWords.begin(), stopWords.end(), [](const std::string& value) {
+            return value.empty();
+        }),
+        stopWords.end()
+    );
+    if (stopWords.empty()) {
+        stopWords.emplace_back(DEFAULT_STOP_WORD);
+    }
+    return stopWords;
 }
 
-MNN::Transformer::ChatMessages formatChatMessages(
+std::string normalizeRole(const std::string& role) {
+    if (role == "system" || role == "assistant" || role == "tool" || role == "json") {
+        return role;
+    }
+    return "user";
+}
+
+MNN::Transformer::ChatMessages toChatMessages(
     JNIEnv* env,
-    jobjectArray historyRoles,
-    jobjectArray historyContents,
-    const std::string& prompt
+    jobjectArray roles,
+    jobjectArray contents
 ) {
     MNN::Transformer::ChatMessages messages;
-    const auto historySize = std::min(
-        env->GetArrayLength(historyRoles),
-        env->GetArrayLength(historyContents)
-    );
-    for (jsize index = 0; index < historySize; ++index) {
-        auto role = static_cast<jstring>(env->GetObjectArrayElement(historyRoles, index));
-        auto content = static_cast<jstring>(env->GetObjectArrayElement(historyContents, index));
-        const auto roleText = toString(env, role);
+    if (roles == nullptr || contents == nullptr) return messages;
+
+    const auto size = std::min(env->GetArrayLength(roles), env->GetArrayLength(contents));
+    messages.reserve(static_cast<size_t>(size));
+    for (jsize index = 0; index < size; ++index) {
+        auto role = static_cast<jstring>(env->GetObjectArrayElement(roles, index));
+        auto content = static_cast<jstring>(env->GetObjectArrayElement(contents, index));
+        const auto roleText = normalizeRole(toString(env, role));
         const auto contentText = toString(env, content);
         env->DeleteLocalRef(role);
         env->DeleteLocalRef(content);
 
-        if (contentText.empty()) continue;
-        const auto normalizedRole = roleText == "system" || roleText == "assistant"
-            ? roleText
-            : "user";
-        messages.emplace_back(normalizedRole, formatChatMessage(normalizedRole, contentText));
+        if (!contentText.empty()) {
+            messages.emplace_back(roleText, contentText);
+        }
     }
-    messages.emplace_back("user", formatUserPrompt(prompt));
     return messages;
+}
+
+StopMatch findStopMatch(const std::string& token, const std::vector<std::string>& stopWords) {
+    StopMatch match;
+    for (const auto& stopWord : stopWords) {
+        const auto position = token.find(stopWord);
+        if (position != std::string::npos &&
+            (!match.found || position < match.position)) {
+            match.found = true;
+            match.position = position;
+            match.value = stopWord;
+        }
+    }
+    return match;
 }
 
 bool callTokenCallback(JNIEnv* env, jobject callback, jmethodID onToken, const std::string& token) {
@@ -150,40 +193,17 @@ void markUserCancelled(MNN::Transformer::Llm* llm) {
     mutableContext->status = MNN::Transformer::LlmStatus::USER_CANCEL;
 }
 
-}  // namespace
-
-extern "C" JNIEXPORT jlong JNICALL
-Java_com_example_persona_core_ai_mnn_NativeMnnSession_nativeCreate(
+void runGeneration(
     JNIEnv* env,
-    jobject,
-    jstring configPath
-) {
-    const auto path = toString(env, configPath);
-    if (path.empty()) return 0;
-
-    auto* session = new MnnSession();
-    session->llm = MNN::Transformer::Llm::createLLM(path);
-    if (session->llm == nullptr || !session->llm->load()) {
-        delete session;
-        return 0;
-    }
-    return reinterpret_cast<jlong>(session);
-}
-
-extern "C" JNIEXPORT void JNICALL
-Java_com_example_persona_core_ai_mnn_NativeMnnSession_nativeGenerate(
-    JNIEnv* env,
-    jobject,
-    jlong handle,
-    jstring prompt,
-    jobjectArray historyRoles,
-    jobjectArray historyContents,
+    MnnSession* session,
+    jobject callback,
     jfloat temperature,
     jfloat topP,
     jint maxTokens,
-    jobject callback
+    const std::vector<std::string>& stopWords,
+    const std::function<void(std::ostream*, const char*)>& prefill,
+    const std::function<void(const std::string&)>& syncPromptCache
 ) {
-    auto* session = reinterpret_cast<MnnSession*>(handle);
     if (session == nullptr || session->llm == nullptr || callback == nullptr) return;
 
     std::lock_guard<std::mutex> lock(session->mutex);
@@ -195,14 +215,12 @@ Java_com_example_persona_core_ai_mnn_NativeMnnSession_nativeGenerate(
     env->DeleteLocalRef(callbackClass);
     if (onToken == nullptr) return;
 
-    const auto promptText = toString(env, prompt);
-    auto messages = formatChatMessages(env, historyRoles, historyContents, promptText);
-
     const auto config = "{\"temperature\":" + std::to_string(temperature) +
         ",\"top_p\":" + std::to_string(topP) + "}";
     session->llm->set_config(config);
 
     const auto maxNewTokens = maxTokens > 0 ? maxTokens : 512;
+    const auto primaryStopWord = stopWords.empty() ? std::string(DEFAULT_STOP_WORD) : stopWords.front();
     int currentSize = 0;
     bool generationTextEnd = false;
     bool pendingEop = false;
@@ -231,10 +249,11 @@ Java_com_example_persona_core_ai_mnn_NativeMnnSession_nativeGenerate(
         if (context != nullptr &&
             context->status == MNN::Transformer::LlmStatus::MAX_TOKENS_FINISHED &&
             !session->stopRequested &&
-            currentSize < maxNewTokens) {
+            currentSize < maxNewTokens &&
+            primaryStopWord == DEFAULT_STOP_WORD) {
             // The Android stepping path can emit <eop> after each generate(1)
-            // boundary. Match the official demo by treating that as an
-            // intermediate step until the real stop condition or token cap.
+            // boundary. Treat it as intermediate until a real stop condition
+            // or the token cap is reached.
             restoreAndroidSteppingStatusIfNeeded(session->llm);
             pendingEop = false;
             return;
@@ -257,33 +276,34 @@ Java_com_example_persona_core_ai_mnn_NativeMnnSession_nativeGenerate(
             markUserCancelled(session->llm);
             return;
         }
-        const auto eopPosition = token.find("<eop>");
-        if (eopPosition != std::string::npos) {
-            const auto beforeEop = token.substr(0, eopPosition);
-            if (!beforeEop.empty()) {
-                const auto shouldContinue = utf8Accumulator.appendAndEmit(beforeEop, [&](const std::string& completeToken) {
+
+        const auto stopMatch = findStopMatch(token, stopWords);
+        const auto tokenBeforeStop = stopMatch.found
+            ? token.substr(0, stopMatch.position)
+            : token;
+
+        if (!tokenBeforeStop.empty()) {
+            const auto shouldContinue = utf8Accumulator.appendAndEmit(
+                tokenBeforeStop,
+                [&](const std::string& completeToken) {
                     return emitToken(completeToken);
-                });
-                if (!shouldContinue) {
-                    session->stopRequested = true;
-                    markUserCancelled(session->llm);
                 }
+            );
+            if (!shouldContinue) {
+                session->stopRequested = true;
+                markUserCancelled(session->llm);
             }
-            pendingEop = true;
-            return;
         }
 
-        const auto shouldContinue = utf8Accumulator.appendAndEmit(token, [&](const std::string& completeToken) {
-            return emitToken(completeToken);
-        });
-        if (!shouldContinue) {
-            session->stopRequested = true;
-            markUserCancelled(session->llm);
+        if (stopMatch.found && stopMatch.value == DEFAULT_STOP_WORD) {
+            pendingEop = true;
+        } else if (stopMatch.found) {
+            generationTextEnd = true;
         }
     });
     std::ostream output(&streamBuffer);
 
-    session->llm->response(messages, &output, "<eop>", 0);
+    prefill(&output, primaryStopWord.c_str());
     const auto kvBeforeDecode = session->llm->getCurrentHistory();
     resolveAndroidSteppingEop();
     while (!session->stopRequested && !generationTextEnd && currentSize < maxNewTokens) {
@@ -294,13 +314,100 @@ Java_com_example_persona_core_ai_mnn_NativeMnnSession_nativeGenerate(
     finalizePendingEop();
 
     const auto responseText = responseBuffer.str();
-    if (!session->stopRequested && !responseText.empty()) {
-        auto messagesWithResponse = messages;
-        messagesWithResponse.emplace_back("assistant", responseText);
-        session->llm->syncPromptCache(messagesWithResponse);
+    if (!session->stopRequested && !responseText.empty() && syncPromptCache) {
+        syncPromptCache(responseText);
     } else if (session->stopRequested && currentSize > 0) {
         session->llm->eraseHistory(kvBeforeDecode, 0);
     }
+}
+
+}  // namespace
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_example_persona_core_ai_mnn_NativeMnnSession_nativeCreate(
+    JNIEnv* env,
+    jobject,
+    jstring configPath
+) {
+    const auto path = toString(env, configPath);
+    if (path.empty()) return 0;
+
+    auto* session = new MnnSession();
+    session->llm = MNN::Transformer::Llm::createLLM(path);
+    if (session->llm == nullptr || !session->llm->load()) {
+        delete session;
+        return 0;
+    }
+    return reinterpret_cast<jlong>(session);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_example_persona_core_ai_mnn_NativeMnnSession_nativeGenerateRawText(
+    JNIEnv* env,
+    jobject,
+    jlong handle,
+    jstring promptText,
+    jobjectArray stopWords,
+    jfloat temperature,
+    jfloat topP,
+    jint maxTokens,
+    jobject callback
+) {
+    auto* session = reinterpret_cast<MnnSession*>(handle);
+    const auto prompt = toString(env, promptText);
+    const auto nativeStopWords = toStopWords(env, stopWords);
+
+    runGeneration(
+        env,
+        session,
+        callback,
+        temperature,
+        topP,
+        maxTokens,
+        nativeStopWords,
+        [&](std::ostream* output, const char* primaryStopWord) {
+            session->llm->reset();
+            const auto inputIds = session->llm->tokenizer_encode(prompt);
+            session->llm->response(inputIds, output, primaryStopWord, 0);
+        },
+        nullptr
+    );
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_example_persona_core_ai_mnn_NativeMnnSession_nativeGenerateChatMessages(
+    JNIEnv* env,
+    jobject,
+    jlong handle,
+    jobjectArray roles,
+    jobjectArray contents,
+    jobjectArray stopWords,
+    jfloat temperature,
+    jfloat topP,
+    jint maxTokens,
+    jobject callback
+) {
+    auto* session = reinterpret_cast<MnnSession*>(handle);
+    auto messages = toChatMessages(env, roles, contents);
+    const auto nativeStopWords = toStopWords(env, stopWords);
+
+    runGeneration(
+        env,
+        session,
+        callback,
+        temperature,
+        topP,
+        maxTokens,
+        nativeStopWords,
+        [&](std::ostream* output, const char* primaryStopWord) {
+            session->llm->response(messages, output, primaryStopWord, 0);
+        },
+        [&](const std::string& responseText) {
+            auto messagesWithResponse = messages;
+            messagesWithResponse.emplace_back("assistant", responseText);
+            session->llm->syncPromptCache(messagesWithResponse);
+        }
+    );
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -324,8 +431,8 @@ Java_com_example_persona_core_ai_mnn_NativeMnnSession_nativeDestroy(
     auto* session = reinterpret_cast<MnnSession*>(handle);
     if (session == nullptr) return;
 
-    // Stop first, then wait for an in-flight nativeGenerate call to leave the
-    // session mutex before destroying the LLM object it is using.
+    // Stop first, then wait for an in-flight native call to leave the session
+    // mutex before destroying the LLM object it is using.
     session->stopRequested = true;
     {
         std::lock_guard<std::mutex> lock(session->mutex);

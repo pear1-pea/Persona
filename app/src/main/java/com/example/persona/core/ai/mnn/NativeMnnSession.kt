@@ -1,7 +1,7 @@
 package com.example.persona.core.ai.mnn
 
-import com.example.persona.core.ai.ChatMessage
 import com.example.persona.core.ai.GenerationParams
+import com.example.persona.core.ai.prompt.NativePromptPayload
 
 internal fun interface NativeTokenCallback {
     fun onToken(token: String): Boolean
@@ -17,22 +17,33 @@ internal class NativeMnnSession {
     }
 
     fun generate(
-        prompt: String,
-        history: List<ChatMessage>,
+        payload: NativePromptPayload,
         params: GenerationParams,
         onToken: (String) -> Boolean
     ) {
         check(handle != 0L) { "MNN session has not been loaded" }
-        nativeGenerate(
-            handle = handle,
-            prompt = prompt,
-            historyRoles = history.map { it.role }.toTypedArray(),
-            historyContents = history.map { it.content }.toTypedArray(),
-            temperature = params.temperature,
-            topP = params.topP,
-            maxTokens = params.maxTokens,
-            callback = NativeTokenCallback(onToken)
-        )
+        when (payload) {
+            is NativePromptPayload.ChatMessages -> nativeGenerateChatMessages(
+                handle = handle,
+                roles = payload.messages.map { it.role }.toTypedArray(),
+                contents = payload.messages.map { it.content }.toTypedArray(),
+                stopWords = payload.stopWords.toTypedArray(),
+                temperature = params.temperature,
+                topP = params.topP,
+                maxTokens = params.maxTokens,
+                callback = NativeTokenCallback(onToken)
+            )
+
+            is NativePromptPayload.RawText -> nativeGenerateRawText(
+                handle = handle,
+                promptText = payload.text,
+                stopWords = payload.stopWords.toTypedArray(),
+                temperature = params.temperature,
+                topP = params.topP,
+                maxTokens = params.maxTokens,
+                callback = NativeTokenCallback(onToken)
+            )
+        }
     }
 
     fun stop() {
@@ -54,11 +65,21 @@ internal class NativeMnnSession {
 
     private external fun nativeCreate(modelConfigPath: String): Long
 
-    private external fun nativeGenerate(
+    private external fun nativeGenerateRawText(
         handle: Long,
-        prompt: String,
-        historyRoles: Array<String>,
-        historyContents: Array<String>,
+        promptText: String,
+        stopWords: Array<String>,
+        temperature: Float,
+        topP: Float,
+        maxTokens: Int,
+        callback: NativeTokenCallback
+    )
+
+    private external fun nativeGenerateChatMessages(
+        handle: Long,
+        roles: Array<String>,
+        contents: Array<String>,
+        stopWords: Array<String>,
         temperature: Float,
         topP: Float,
         maxTokens: Int,

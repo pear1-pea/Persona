@@ -9,6 +9,7 @@ import com.example.persona.core.ai.GenerationParams
 import com.example.persona.core.ai.GenerationSession
 import com.example.persona.core.ai.InstalledModel
 import com.example.persona.core.ai.LocalAiEngine
+import com.example.persona.core.ai.prompt.PromptAdapterRegistry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.channels.trySendBlocking
@@ -25,7 +26,9 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
-class MnnLocalAiEngine @Inject constructor() : LocalAiEngine {
+class MnnLocalAiEngine @Inject constructor(
+    private val promptAdapterRegistry: PromptAdapterRegistry
+) : LocalAiEngine {
     private val initializationMutex = Mutex()
     private val generationMutex = Mutex()
     private val _state = MutableStateFlow<EngineState>(EngineState.Idle)
@@ -36,6 +39,9 @@ class MnnLocalAiEngine @Inject constructor() : LocalAiEngine {
 
     @Volatile
     private var loadedModelId: String? = null
+
+    @Volatile
+    private var loadedModel: InstalledModel? = null
 
     @Volatile
     private var activeSessionId: String? = null
@@ -56,7 +62,7 @@ class MnnLocalAiEngine @Inject constructor() : LocalAiEngine {
                 return@withLock false
             }
 
-            if (session != null && loadedModelId == model.id && _state.value == EngineState.Ready) {
+            if (session != null && loadedModel == model && _state.value == EngineState.Ready) {
                 return@withLock true
             }
 
@@ -77,6 +83,7 @@ class MnnLocalAiEngine @Inject constructor() : LocalAiEngine {
             if (loaded) {
                 session = nativeSession
                 loadedModelId = model.id
+                loadedModel = model
                 _state.value = EngineState.Ready
                 Log.i(TAG, "MNN model loaded: id=${model.id}, elapsedMs=${SystemClock.elapsedRealtime() - startMs}")
             } else if (_state.value !is EngineState.Error) {
@@ -93,8 +100,20 @@ class MnnLocalAiEngine @Inject constructor() : LocalAiEngine {
         params: GenerationParams
     ): Flow<String> = callbackFlow {
         val nativeSession = this@MnnLocalAiEngine.session
-        if (nativeSession == null || _state.value != EngineState.Ready) {
+        val model = loadedModel
+        if (nativeSession == null || model == null || _state.value != EngineState.Ready) {
             close(IllegalStateException("\u672c\u5730\u6a21\u578b\u5c1a\u672a\u5c31\u7eea"))
+            return@callbackFlow
+        }
+        val payload = runCatching {
+            promptAdapterRegistry.buildPayload(
+                model = model,
+                prompt = prompt,
+                history = history,
+                params = params
+            )
+        }.getOrElse { error ->
+            close(error)
             return@callbackFlow
         }
 
@@ -107,7 +126,7 @@ class MnnLocalAiEngine @Inject constructor() : LocalAiEngine {
                 var firstChunkMs: Long? = null
                 val generationStartMs = SystemClock.elapsedRealtime()
                 runCatching {
-                    nativeSession.generate(prompt, history, params) { token ->
+                    nativeSession.generate(payload, params) { token ->
                         if (activeSessionId != session.id) {
                             false
                         } else {
@@ -184,6 +203,7 @@ class MnnLocalAiEngine @Inject constructor() : LocalAiEngine {
         session?.close()
         session = null
         loadedModelId = null
+        loadedModel = null
     }
 
     private fun sanitizeChunk(rawChunk: String): String {

@@ -50,6 +50,19 @@ class HybridAiRepository @Inject constructor(
         }
     }
 
+    suspend fun selectModeForGeneration(forceCloud: Boolean, localEnabled: Boolean = true): Mode {
+        if (forceCloud || !localEnabled) {
+            _activeMode.value = Mode.CLOUD
+            return Mode.CLOUD
+        }
+
+        return if (ensureLocalReady()) {
+            Mode.LOCAL
+        } else {
+            Mode.CLOUD
+        }
+    }
+
     fun stopGeneration(session: GenerationSession) {
         localAiEngine.stopGeneration(session)
     }
@@ -90,5 +103,23 @@ class HybridAiRepository @Inject constructor(
 
     private companion object {
         const val LOCAL_FALLBACK_NOTICE = "\n\n[本地 AI 生成中断，已切换到云端继续。]\n"
+    }
+
+    private suspend fun ensureLocalReady(): Boolean {
+        var model = localModelManager.currentModel.value
+        if (model == null) {
+            localModelManager.refreshInstalledModels()
+            model = localModelManager.currentModel.value
+        }
+
+        if (model == null) {
+            _activeMode.value = Mode.CLOUD
+            localAiEngine.release()
+            return false
+        }
+
+        val initialized = localAiEngine.initialize(model)
+        _activeMode.value = if (initialized) Mode.LOCAL else Mode.CLOUD
+        return initialized
     }
 }

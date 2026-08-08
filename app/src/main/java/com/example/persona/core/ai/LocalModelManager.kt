@@ -15,141 +15,135 @@ import javax.inject.Singleton
 
 @Singleton
 class LocalModelManager @Inject constructor(
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    private val validator: LocalModelValidator
 ) {
     private val preferences = context.getSharedPreferences("local_model_settings", Context.MODE_PRIVATE)
     private val _currentModel = MutableStateFlow<InstalledModel?>(null)
     val currentModel: StateFlow<InstalledModel?> = _currentModel.asStateFlow()
 
-    suspend fun refreshInstalledModels(): List<InstalledModel> = withContext(Dispatchers.IO) {
-        val models = modelRoots()
-            .onEach { it.mkdirs() }
-            .flatMap(::candidateModelDirectories)
-            .mapNotNull(::toInstalledModel)
-            // The external directory comes first, so it wins if the same model
-            // was copied to both locations during development.
-            .distinctBy(InstalledModel::id)
-
-        val compatibleModels = models.filter(::isCompatible)
-
-        val selectedId = preferences.getString(KEY_CURRENT_MODEL_ID, null)
-        _currentModel.value = compatibleModels.firstOrNull { it.id == selectedId } ?: compatibleModels.firstOrNull()
-        _currentModel.value?.let { model ->
-            preferences.edit().putString(KEY_CURRENT_MODEL_ID, model.id).apply()
-        }
-        models
+    suspend fun scanModels(): List<ModelScanReport> = withContext(Dispatchers.IO) {
+        scanModelReports()
     }
 
-    suspend fun selectModel(modelId: String): InstalledModel? = withContext(Dispatchers.IO) {
-        val model = modelRoots()
-            .asSequence()
-            .flatMap { root -> candidateModelDirectories(root).asSequence() }
-            .firstOrNull { it.isDirectory && it.name == modelId }
-            ?.let(::toInstalledModel)
-            ?.takeIf(::isCompatible)
+    suspend fun refreshModelReports(): List<ModelScanReport> = withContext(Dispatchers.IO) {
+        val reports = scanModelReports()
+        val readyModels = reports.mapNotNull { report ->
+            (report.result as? ModelScanResult.Ready)?.model
+        }.distinctBy(InstalledModel::id)
 
+        val selectedModel = findSelectedModel(readyModels)
+        _currentModel.value = selectedModel
+        if (selectedModel == null) {
+            clearCurrentModelPreference()
+        }
+        reports
+    }
+
+    suspend fun refreshInstalledModels(): List<InstalledModel> = withContext(Dispatchers.IO) {
+        refreshModelReports().mapNotNull { report ->
+            (report.result as? ModelScanResult.Ready)?.model
+        }.distinctBy(InstalledModel::id)
+    }
+
+    suspend fun selectModel(modelDir: String): InstalledModel? = withContext(Dispatchers.IO) {
+        val target = resolveManagedModelDirectory(modelDir) ?: return@withContext null
+        val report = validator.validate(target, deviceCapability())
+        val model = (report.result as? ModelScanResult.Ready)?.model ?: return@withContext null
         _currentModel.value = model
-        preferences.edit().putString(KEY_CURRENT_MODEL_ID, model?.id).apply()
+        preferences.edit()
+            .putString(KEY_CURRENT_MODEL_ID, model.id)
+            .putString(KEY_CURRENT_MODEL_DIR, model.modelDir)
+            .apply()
         model
     }
 
-    fun recommendedModel(): RecommendedModel {
+    suspend fun clearCurrentModel() = withContext(Dispatchers.IO) {
+        _currentModel.value = null
+        clearCurrentModelPreference()
+    }
+
+    suspend fun deleteModel(modelDir: String): Boolean = withContext(Dispatchers.IO) {
+        val target = resolveManagedModelDirectory(modelDir) ?: return@withContext false
+        val deleted = !target.exists() || target.deleteRecursively()
+        if (deleted && currentModelMatches(target)) {
+            _currentModel.value = null
+            clearCurrentModelPreference()
+        }
+        deleted
+    }
+
+    fun deviceCapability(): DeviceCapability {
         val memoryInfo = ActivityManager.MemoryInfo()
         val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
         activityManager.getMemoryInfo(memoryInfo)
-        val totalRamGb = memoryInfo.totalMem / BYTES_PER_GB
 
-        return when {
-            totalRamGb >= 8 -> RecommendedModel.QWEN_1_5B
-            totalRamGb >= 4 -> RecommendedModel.QWEN_0_5B
-            else -> RecommendedModel.CLOUD_ONLY
-        }
-    }
-
-    fun modelsRoot(): File {
-        return context.getExternalFilesDir(MODELS_DIRECTORY)
-            ?: File(context.filesDir, MODELS_DIRECTORY)
-    }
-
-    private fun modelRoots(): List<File> {
-        return listOfNotNull(
-            context.getExternalFilesDir(MODELS_DIRECTORY),
-            File(context.filesDir, MODELS_DIRECTORY)
-        ).distinctBy(File::getAbsolutePath)
-    }
-
-    private fun toInstalledModel(directory: File): InstalledModel? {
-        val configFile = File(directory, MNN_CONFIG_FILE)
-        if (!configFile.isFile) return null
-        if (!containsMnnRuntimeFile(directory)) return null
-
-        return InstalledModel(
-            id = directory.name,
-            name = directory.name.replace('-', ' '),
-            version = "local",
-            modelDir = directory.absolutePath,
-            backend = Backend.MNN
+        val root = modelsRoot().also { it.mkdirs() }
+        return DeviceCapability(
+            ramGb = memoryInfo.totalMem.toRoundedGb(),
+            abi = Build.SUPPORTED_ABIS.firstOrNull().orEmpty().ifBlank { "unknown" },
+            sdk = Build.VERSION.SDK_INT,
+            availableStorageBytes = root.usableSpace
         )
     }
 
-    private fun isCompatible(model: InstalledModel): Boolean {
-        return supportsArm64() &&
-            Build.VERSION.SDK_INT >= MINIMUM_MNN_SDK &&
-            getTotalRamGb() >= minimumRamGbFor(model)
+    fun modelsRoot(): File {
+        return checkNotNull(context.getExternalFilesDir(MODELS_DIRECTORY)) {
+            "无法访问 App 专属外部 models 目录"
+        }
     }
 
-    private fun minimumRamGbFor(model: InstalledModel): Int {
-        return if (model.id.contains("1.5b", ignoreCase = true)) 8 else 4
+    private fun findSelectedModel(models: List<InstalledModel>): InstalledModel? {
+        val selectedDir = preferences.getString(KEY_CURRENT_MODEL_DIR, null)
+        val selectedId = preferences.getString(KEY_CURRENT_MODEL_ID, null)
+        return models.firstOrNull { it.modelDir == selectedDir }
+            ?: models.firstOrNull { it.id == selectedId }
     }
-
-    private fun getTotalRamGb(): Long {
-        val memoryInfo = ActivityManager.MemoryInfo()
-        val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-        activityManager.getMemoryInfo(memoryInfo)
-        return memoryInfo.totalMem / BYTES_PER_GB
-    }
-
-    private fun supportsArm64(): Boolean = Build.SUPPORTED_ABIS.any { it == "arm64-v8a" }
 
     private fun candidateModelDirectories(root: File): List<File> {
         if (!root.exists()) return emptyList()
-
-        val candidates = linkedSetOf<File>()
-        fun scan(directory: File, depth: Int) {
-            if (depth > MAX_MODEL_DIRECTORY_DEPTH || !directory.isDirectory) return
-
-            if (File(directory, MNN_CONFIG_FILE).isFile) {
-                candidates += directory
-                return
-            }
-
-            directory.listFiles()
-                ?.filter(File::isDirectory)
-                ?.forEach { child -> scan(child, depth + 1) }
-        }
-
-        scan(root, depth = 0)
-        return candidates.toList()
+        return root.listFiles()
+            ?.filter(File::isDirectory)
+            .orEmpty()
     }
 
-    private fun containsMnnRuntimeFile(directory: File): Boolean {
-        return directory.listFiles()
-            ?.any { file ->
-                file.isFile && (
-                    file.extension.equals(MNN_EXTENSION, ignoreCase = true) ||
-                        file.name.endsWith(MNN_WEIGHT_SUFFIX, ignoreCase = true)
-                    )
-            } == true
+    private fun scanModelReports(): List<ModelScanReport> {
+        val capability = deviceCapability()
+        return modelsRoot()
+            .also { it.mkdirs() }
+            .let(::candidateModelDirectories)
+            .map { directory -> validator.validate(directory, capability) }
+    }
+
+    private fun Long.toRoundedGb(): Int {
+        if (this <= 0L) return 0
+        return ((this + BYTES_PER_GB - 1) / BYTES_PER_GB).toInt()
+    }
+
+    private fun resolveManagedModelDirectory(modelDir: String): File? {
+        val target = runCatching { File(modelDir).canonicalFile }.getOrNull() ?: return null
+        val root = runCatching { modelsRoot().canonicalFile }.getOrNull() ?: return null
+        return target.takeIf { it.parentFile == root && it.isDirectory }
+    }
+
+    private fun currentModelMatches(target: File): Boolean {
+        val current = _currentModel.value ?: return false
+        val currentDir = runCatching { File(current.modelDir).canonicalFile }.getOrNull()
+        return currentDir == target || current.id == target.name
+    }
+
+    private fun clearCurrentModelPreference() {
+        preferences.edit()
+            .remove(KEY_CURRENT_MODEL_ID)
+            .remove(KEY_CURRENT_MODEL_DIR)
+            .apply()
     }
 
     private companion object {
         const val KEY_CURRENT_MODEL_ID = "current_model_id"
+        const val KEY_CURRENT_MODEL_DIR = "current_model_dir"
         const val MODELS_DIRECTORY = "models"
-        const val MNN_CONFIG_FILE = "config.json"
-        const val MNN_EXTENSION = "mnn"
-        const val MNN_WEIGHT_SUFFIX = ".mnn.weight"
-        const val MAX_MODEL_DIRECTORY_DEPTH = 4
-        const val MINIMUM_MNN_SDK = 26
-        const val BYTES_PER_GB = 1024L * 1024L * 1024L
+        const val MANIFEST_FILE = "manifest.json"
+        const val BYTES_PER_GB = 1_000_000_000L
     }
 }
