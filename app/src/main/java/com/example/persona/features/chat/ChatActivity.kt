@@ -6,6 +6,7 @@ import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import androidx.activity.viewModels
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.toColorInt
@@ -152,6 +153,10 @@ class ChatActivity : AppCompatActivity() {
             }
         }
 
+        binding.btnClearConversation.setOnClickListener {
+            confirmClearConversation()
+        }
+
         binding.etMessage.setOnEditorActionListener { v, actionId, _ ->
             if (actionId == EditorInfo.IME_ACTION_DONE) {
                 hideKeyboard(v)
@@ -180,6 +185,20 @@ class ChatActivity : AppCompatActivity() {
         if (adapter.itemCount > 0) {
             binding.rvChatMessages.scrollToPosition(adapter.itemCount - 1)
         }
+    }
+
+    private fun confirmClearConversation() {
+        val personaName = viewModel.currentPersona.value?.name ?: binding.tvChatTitle.text.toString()
+        AlertDialog.Builder(this)
+            .setTitle("清空对话？")
+            .setMessage("将删除与 $personaName 的本地聊天记录。这个操作不会删除 persona。")
+            .setNegativeButton("取消", null)
+            .setPositiveButton("清空") { _, _ ->
+                viewModel.clearCurrentConversation()
+                shouldFollowLatestMessage = true
+                didPositionInitialMessages = false
+            }
+            .show()
     }
 
     override fun onDestroy() {

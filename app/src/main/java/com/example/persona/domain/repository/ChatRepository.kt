@@ -14,4 +14,6 @@ interface ChatRepository {
     suspend fun saveMessage(message: Message, persona: Persona)
 
     suspend fun updateMessageContent(id: String, content: String)
+
+    suspend fun deleteMessagesForPersona(personaId: String)
 }

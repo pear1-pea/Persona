@@ -50,4 +50,8 @@ class RoomChatRepository @Inject constructor(
             messageDao.updateMessage(updated)
         }
     }
+
+    override suspend fun deleteMessagesForPersona(personaId: String) {
+        messageDao.deleteMessagesByPersonaId(personaId)
+    }
 }
