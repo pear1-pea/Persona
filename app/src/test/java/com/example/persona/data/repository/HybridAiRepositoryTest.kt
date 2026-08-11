@@ -7,15 +7,22 @@ import com.example.persona.core.ai.GenerationSession
 import com.example.persona.core.ai.InstalledModel
 import com.example.persona.core.ai.LocalAiEngine
 import com.example.persona.core.ai.LocalModelManager
+import com.example.persona.core.ai.ModelFamilies
+import com.example.persona.core.ai.PromptFormats
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Before
 import org.junit.Test
+import org.mockito.kotlin.atLeastOnce
 import org.mockito.kotlin.any
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
@@ -55,7 +62,10 @@ class HybridAiRepositoryTest {
     }
 
     @Test
-    fun `ready local engine is selected when local mode is enabled`() {
+    fun `ready loaded local engine is selected when local mode is enabled`() = runTest {
+        whenever(localEngine.initialize(sampleModel())).thenReturn(true)
+        repository.selectModeForGeneration(forceCloud = false)
+
         assertEquals(HybridAiRepository.Mode.LOCAL, repository.selectMode(false, true))
     }
 
@@ -76,6 +86,51 @@ class HybridAiRepositoryTest {
     @Test
     fun `force cloud bypasses ready local engine`() {
         assertEquals(HybridAiRepository.Mode.CLOUD, repository.selectMode(true, true))
+    }
+
+    @Test
+    fun `generation mode initializes selected local model before choosing local`() = runTest {
+        engineState.value = EngineState.Idle
+        whenever(localEngine.initialize(sampleModel())).thenReturn(true)
+
+        val mode = repository.selectModeForGeneration(forceCloud = false)
+
+        assertEquals(HybridAiRepository.Mode.LOCAL, mode)
+        assertEquals(HybridAiRepository.Mode.LOCAL, repository.activeMode.value)
+        verify(localEngine).initialize(sampleModel())
+    }
+
+    @Test
+    fun `generation mode falls back to cloud when selected local model fails to initialize`() = runTest {
+        engineState.value = EngineState.Idle
+        whenever(localEngine.initialize(sampleModel())).thenReturn(false)
+
+        val mode = repository.selectModeForGeneration(forceCloud = false)
+
+        assertEquals(HybridAiRepository.Mode.CLOUD, mode)
+        assertEquals(HybridAiRepository.Mode.CLOUD, repository.activeMode.value)
+        verify(localEngine).initialize(sampleModel())
+    }
+
+    @Test
+    fun `generation mode falls back to cloud when selected local model initialization throws`() = runTest {
+        engineState.value = EngineState.Idle
+        whenever(localEngine.initialize(sampleModel())).thenThrow(IllegalStateException("bad model"))
+
+        val mode = repository.selectModeForGeneration(forceCloud = false)
+
+        assertEquals(HybridAiRepository.Mode.CLOUD, mode)
+        assertEquals(HybridAiRepository.Mode.CLOUD, repository.activeMode.value)
+        verify(localEngine).initialize(sampleModel())
+    }
+
+    @Test
+    fun `generation mode force cloud bypasses local initialization`() = runTest {
+        val mode = repository.selectModeForGeneration(forceCloud = true)
+
+        assertEquals(HybridAiRepository.Mode.CLOUD, mode)
+        assertEquals(HybridAiRepository.Mode.CLOUD, repository.activeMode.value)
+        verify(localEngine, org.mockito.kotlin.never()).initialize(any())
     }
 
     @Test
@@ -203,14 +258,100 @@ class HybridAiRepositoryTest {
 
         assertEquals(false, initialized)
         assertEquals(HybridAiRepository.Mode.CLOUD, repository.activeMode.value)
-        verify(localEngine).release()
+        verify(localEngine, atLeastOnce()).release()
     }
 
-    private fun sampleModel() = InstalledModel(
-        id = "qwen2.5-0.5b-instruct-mnn",
-        name = "Qwen2.5 0.5B Instruct",
+    @Test
+    fun `current model cleared releases loaded engine and switches to cloud`() = runTest {
+        whenever(localEngine.initialize(sampleModel())).thenReturn(true)
+        repository.selectModeForGeneration(forceCloud = false)
+
+        modelState.value = null
+
+        awaitAssertion {
+            verify(localEngine).release()
+            assertEquals(HybridAiRepository.Mode.CLOUD, repository.activeMode.value)
+        }
+    }
+
+    @Test
+    fun `current model change releases old engine and next generation loads new model`() = runTest {
+        val oldModel = sampleModel()
+        val newModel = sampleModel(
+            id = "qwen2.5-1.5b-instruct-mnn",
+            modelDir = "/models/qwen2.5-1.5b-instruct-mnn"
+        )
+        whenever(localEngine.initialize(oldModel)).thenReturn(true)
+        whenever(localEngine.initialize(newModel)).thenReturn(true)
+        repository.selectModeForGeneration(forceCloud = false)
+
+        modelState.value = newModel
+        awaitAssertion {
+            verify(localEngine).release()
+            assertEquals(HybridAiRepository.Mode.CLOUD, repository.activeMode.value)
+        }
+
+        val mode = repository.selectModeForGeneration(forceCloud = false)
+
+        assertEquals(HybridAiRepository.Mode.LOCAL, mode)
+        verify(localEngine).initialize(newModel)
+    }
+
+    @Test
+    fun `current model cleared during local generation stops generation and releases engine`() = runTest {
+        val session = GenerationSession()
+        whenever(localEngine.streamResponse(any(), any(), any(), any())).thenReturn(flow {
+            emit("partial")
+            awaitCancellation()
+        })
+
+        val tokens = mutableListOf<String>()
+        val job = backgroundScope.launch {
+            repository.streamResponse(
+                mode = HybridAiRepository.Mode.LOCAL,
+                session = session,
+                systemPrompt = "system",
+                userMessage = "user"
+            ).toList(tokens)
+        }
+
+        awaitAssertion {
+            assertEquals(listOf("partial"), tokens)
+        }
+        modelState.value = null
+
+        awaitAssertion {
+            verify(localEngine).stopGeneration(session)
+            verify(localEngine).release()
+            assertEquals(HybridAiRepository.Mode.CLOUD, repository.activeMode.value)
+        }
+        job.cancel()
+    }
+
+    private suspend fun awaitAssertion(assertion: () -> Unit) {
+        withTimeout(1_000) {
+            while (true) {
+                try {
+                    assertion()
+                    return@withTimeout
+                } catch (error: AssertionError) {
+                    delay(10)
+                }
+            }
+        }
+    }
+
+    private fun sampleModel(
+        id: String = "qwen2.5-0.5b-instruct-mnn",
+        modelDir: String = "/models/qwen2.5-0.5b-instruct-mnn"
+    ) = InstalledModel(
+        id = id,
+        name = "Qwen2.5 Instruct",
         version = "local",
-        modelDir = "/models/qwen2.5-0.5b-instruct-mnn",
-        backend = Backend.MNN
+        modelDir = modelDir,
+        backend = Backend.MNN,
+        family = ModelFamilies.QWEN2_5,
+        promptFormat = PromptFormats.QWEN_CHATML_TEXT,
+        contextWindow = 4096
     )
 }

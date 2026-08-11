@@ -11,7 +11,7 @@ import com.example.persona.data.local.entity.MessageEntity
 @Dao
 interface MessageDao {
 
-    @Query("SELECT * FROM messages WHERE personaId = :personaId ORDER BY timestamp DESC")
+    @Query("SELECT * FROM messages WHERE personaId = :personaId ORDER BY timestamp ASC")
     fun getMessagesByPersonaId(personaId: String): PagingSource<Int, MessageEntity>
 
     @Query("SELECT * FROM messages WHERE personaId = :personaId ORDER BY timestamp DESC LIMIT :limit")
@@ -25,4 +25,7 @@ interface MessageDao {
 
     @Query("SELECT * FROM messages WHERE id = :id")
     suspend fun getMessageById(id: String): MessageEntity?
+
+    @Query("DELETE FROM messages WHERE personaId = :personaId")
+    suspend fun deleteMessagesByPersonaId(personaId: String)
 }

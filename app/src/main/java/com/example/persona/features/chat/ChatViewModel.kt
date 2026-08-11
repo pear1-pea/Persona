@@ -117,6 +117,15 @@ class ChatViewModel @Inject constructor(
         _isGenerating.value = false
     }
 
+    fun clearCurrentConversation() {
+        val persona = _currentPersona.value ?: return
+        stopGenerating()
+        launchCatching(block = {
+            chatRepository.deleteMessagesForPersona(persona.id)
+            emitError("已清空当前对话")
+        })
+    }
+
     private suspend fun generateResponse(
         session: GenerationSession,
         persona: Persona,
@@ -126,6 +135,7 @@ class ChatViewModel @Inject constructor(
         if (userText.isEmpty()) return
 
         val localHistory = chatRepository.getRecentMessages(persona.id, LOCAL_HISTORY_LIMIT)
+            .filterStableHistory()
             .toLocalChatHistory()
 
         val userMessage = Message(
@@ -148,13 +158,13 @@ class ChatViewModel @Inject constructor(
             persona
         )
 
-        val mode = hybridRepository.selectMode(forceCloud)
+        val mode = hybridRepository.selectModeForGeneration(forceCloud)
         _isCloudMode.value = mode == HybridAiRepository.Mode.CLOUD
-        val systemPrompt = "You are ${persona.name}. ${persona.backstory}. " +
-            "Traits: ${persona.traits.joinToString()}. Reply in the user's language."
+        val systemPrompt = buildSystemPrompt(persona)
 
         var content = ""
         var streamFailed = false
+        var stoppedForRepetition = false
         try {
             hybridRepository.streamResponse(mode, session, systemPrompt, userText, localHistory)
                 .catch { error ->
@@ -167,11 +177,20 @@ class ChatViewModel @Inject constructor(
                 }
                 .collect { token ->
                     if (activeGenerationSession?.id != session.id) return@collect
+                    if (stoppedForRepetition) return@collect
                     content += token
-                    chatRepository.updateMessageContent(aiMessageId, content)
+                    if (mode == HybridAiRepository.Mode.LOCAL && content.hasRepetitionLoop()) {
+                        stoppedForRepetition = true
+                        val cleanedContent = content.trim().appendStopNotice()
+                        chatRepository.updateMessageContent(aiMessageId, cleanedContent)
+                        hybridRepository.stopGeneration(session)
+                        return@collect
+                    } else {
+                        chatRepository.updateMessageContent(aiMessageId, content)
+                    }
                 }
 
-            if (!streamFailed && content.isEmpty() && activeGenerationSession?.id == session.id) {
+            if (!streamFailed && !stoppedForRepetition && content.isEmpty() && activeGenerationSession?.id == session.id) {
                 chatRepository.updateMessageContent(aiMessageId, EMPTY_RESPONSE_MESSAGE)
             }
         } catch (error: CancellationException) {
@@ -183,6 +202,21 @@ class ChatViewModel @Inject constructor(
             throw error
         }
 
+    }
+
+    private fun buildSystemPrompt(persona: Persona): String {
+        return """
+            You are ${persona.name}.
+            Persona background: ${persona.backstory}
+            Traits: ${persona.traits.joinToString()}
+
+            Rules:
+            - Reply in the user's language.
+            - Keep replies concise and conversational.
+            - Do not repeat the same sentence, phrase, or paragraph.
+            - If the user greets you, answer naturally in 1-3 sentences.
+            - Stop once you have answered the user's message.
+        """.trimIndent()
     }
 
     private fun finishGeneration(session: GenerationSession) {
@@ -210,6 +244,54 @@ class ChatViewModel @Inject constructor(
             .toList()
     }
 
+    private fun List<Message>.filterStableHistory(): List<Message> {
+        return filter { message ->
+            val content = message.content.trim()
+            content.isNotBlank() &&
+                content.length <= MAX_HISTORY_MESSAGE_CHARS &&
+                content !in HISTORY_EXCLUDED_MESSAGES &&
+                !content.contains(LOCAL_FALLBACK_NOTICE_MARKER) &&
+                !content.hasRepetitionLoop()
+        }
+    }
+
+    private fun String.hasRepetitionLoop(): Boolean {
+        val normalized = replace(Regex("\\s+"), "")
+        if (normalized.length < MIN_REPEAT_SCAN_CHARS) return false
+
+        if (hasRepeatedTail(normalized, MIN_REPEAT_SEGMENT_CHARS, MAX_REPEAT_SEGMENT_CHARS)) {
+            return true
+        }
+
+        val sentences = split(Regex("(?<=[。！？.!?])"))
+            .map { it.trim() }
+            .filter { it.length >= MIN_REPEAT_SENTENCE_CHARS }
+            .takeLast(6)
+        return sentences.size >= 3 &&
+            sentences.windowed(3).any { window -> window.distinct().size == 1 }
+    }
+
+    private fun hasRepeatedTail(text: String, minSegmentLength: Int, maxSegmentLength: Int): Boolean {
+        val maxLength = minOf(maxSegmentLength, text.length / REPEAT_COUNT)
+        if (maxLength < minSegmentLength) return false
+
+        for (length in minSegmentLength..maxLength) {
+            val tail = text.takeLast(length)
+            if (tail.repeat(REPEAT_COUNT) == text.takeLast(length * REPEAT_COUNT)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun String.appendStopNotice(): String {
+        return if (isBlank()) {
+            REPETITION_STOPPED_MESSAGE
+        } else {
+            this + "\n\n" + REPETITION_STOPPED_MESSAGE
+        }
+    }
+
     private fun parseModeOverride(text: String): Pair<Boolean, String> {
         val trimmed = text.trim()
         val forceCloud = trimmed.startsWith(CLOUD_PREFIX, ignoreCase = true)
@@ -226,6 +308,20 @@ class ChatViewModel @Inject constructor(
         const val PLACEHOLDER_THINKING = "正在思考..."
         const val STOPPED_RESPONSE_MESSAGE = "已停止生成"
         const val EMPTY_RESPONSE_MESSAGE = "未收到回复，请重试。"
+        const val REPETITION_STOPPED_MESSAGE = "已停止重复输出。"
+        const val LOCAL_FALLBACK_NOTICE_MARKER = "本地 AI 生成中断"
         const val CLOUD_PREFIX = "@cloud"
+        const val MAX_HISTORY_MESSAGE_CHARS = 1500
+        const val MIN_REPEAT_SCAN_CHARS = 36
+        const val MIN_REPEAT_SEGMENT_CHARS = 12
+        const val MAX_REPEAT_SEGMENT_CHARS = 80
+        const val MIN_REPEAT_SENTENCE_CHARS = 6
+        const val REPEAT_COUNT = 3
+        val HISTORY_EXCLUDED_MESSAGES = setOf(
+            PLACEHOLDER_THINKING,
+            STOPPED_RESPONSE_MESSAGE,
+            EMPTY_RESPONSE_MESSAGE,
+            REPETITION_STOPPED_MESSAGE
+        )
     }
 }

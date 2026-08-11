@@ -66,11 +66,22 @@
                 android:id="@+id/tvModeLabel"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginEnd="16dp"
+                android:layout_marginEnd="8dp"
                 android:text="CLOUD"
                 android:textColor="@color/text_secondary"
                 android:textSize="10sp"
                 android:textStyle="bold" />
+
+            <ImageButton
+                android:id="@+id/btnClearConversation"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:layout_marginEnd="8dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="清空当前对话"
+                android:padding="8dp"
+                android:src="@android:drawable/ic_menu_delete"
+                app:tint="@color/text_secondary" />
 
         </LinearLayout>
     </androidx.appcompat.widget.Toolbar>
@@ -82,8 +93,7 @@
         android:layout_height="0dp"
         android:paddingBottom="8dp"
         app:layout_constraintBottom_toTopOf="@id/inputLayout"
-        app:layout_constraintTop_toBottomOf="@id/toolbarChat"
-        app:stackFromEnd="true" />
+        app:layout_constraintTop_toBottomOf="@id/toolbarChat" />
 
     <!-- Bottom input bar -->
     <LinearLayout

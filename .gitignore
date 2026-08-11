@@ -5,6 +5,7 @@
 /.idea/libraries
 /.idea/modules.xml
 /.idea/workspace.xml
+/.idea/vcs.xml
 /.idea/navEditor.xml
 /.idea/assetWizardSettings.xml
 .DS_Store
@@ -19,7 +20,9 @@ app/google-services.json
 /.claude/
 /.gradle-user/
 /.vscode/
-/.idea/appInsightsSettings.xml
-/.idea/deploymentTargetSelector.xml
-/.idea/material_theme_project_new.xml
-/.idea/studiobot.xml
+/.idea/
+
+# Local planning / working notes
+/docs/work-notes/
+/docs/local-notes/
+/notes/
