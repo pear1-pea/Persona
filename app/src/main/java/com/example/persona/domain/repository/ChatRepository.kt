@@ -2,6 +2,7 @@ package com.example.persona.domain.repository
 
 import androidx.paging.PagingData
 import com.example.persona.domain.model.Message
+import com.example.persona.domain.model.MessageStatus
 import com.example.persona.domain.model.Persona
 import kotlinx.coroutines.flow.Flow
 
@@ -13,7 +14,11 @@ interface ChatRepository {
 
     suspend fun saveMessage(message: Message, persona: Persona)
 
-    suspend fun updateMessageContent(id: String, content: String)
+    suspend fun updateMessageContent(
+        id: String,
+        content: String,
+        status: MessageStatus = MessageStatus.NORMAL
+    )
 
     suspend fun deleteMessagesForPersona(personaId: String)
 }

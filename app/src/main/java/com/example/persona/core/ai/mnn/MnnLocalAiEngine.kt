@@ -10,7 +10,10 @@ import com.example.persona.core.ai.GenerationSession
 import com.example.persona.core.ai.InstalledModel
 import com.example.persona.core.ai.LocalAiEngine
 import com.example.persona.core.ai.prompt.PromptAdapterRegistry
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.channels.trySendBlocking
 import kotlinx.coroutines.flow.Flow
@@ -31,6 +34,9 @@ class MnnLocalAiEngine @Inject constructor(
 ) : LocalAiEngine {
     private val initializationMutex = Mutex()
     private val generationMutex = Mutex()
+    // Protects active session references and model lifecycle versioning.
+    // NativeMnnSession serializes generate/destroy while leaving stop non-blocking.
+    private val nativeCallLock = Any()
     private val _state = MutableStateFlow<EngineState>(EngineState.Idle)
     override val state = _state.asStateFlow()
 
@@ -49,6 +55,9 @@ class MnnLocalAiEngine @Inject constructor(
     @Volatile
     private var activeNativeSession: NativeMnnSession? = null
 
+    @Volatile
+    private var lifecycleVersion = 0L
+
     override suspend fun initialize(model: InstalledModel): Boolean = withContext(Dispatchers.IO) {
         initializationMutex.withLock {
             if (model.backend != Backend.MNN) {
@@ -62,32 +71,65 @@ class MnnLocalAiEngine @Inject constructor(
                 return@withLock false
             }
 
-            if (session != null && loadedModel == model && _state.value == EngineState.Ready) {
+            if (synchronized(nativeCallLock) {
+                    session != null && loadedModel == model && _state.value == EngineState.Ready
+                }
+            ) {
                 return@withLock true
             }
 
             val startMs = SystemClock.elapsedRealtime()
-            _state.value = EngineState.Initializing
-            activeNativeSession?.stop()
-            activeSessionId = null
-            activeNativeSession = null
-            releaseInternal()
+            val (initializationVersion, nativeSessionToStop) = synchronized(nativeCallLock) {
+                lifecycleVersion += 1
+                _state.value = EngineState.Initializing
+                activeSessionId = null
+                val activeSession = activeNativeSession
+                activeNativeSession = null
+                lifecycleVersion to activeSession
+            }
+            nativeSessionToStop?.stop()
+            synchronized(nativeCallLock) {
+                releaseInternal()
+            }
             val nativeSession = NativeMnnSession()
-            val loaded = runCatching { nativeSession.load(configFile.absolutePath) }
-                .getOrElse { error ->
-                    Log.e(TAG, "MNN model load failed: ${model.id}", error)
-                    _state.value = EngineState.Error(error.message ?: "MNN \u6a21\u578b\u52a0\u8f7d\u5931\u8d25")
-                    false
+            val loaded = try {
+                val result = nativeSession.load(configFile.absolutePath)
+                currentCoroutineContext().ensureActive()
+                result
+            } catch (error: CancellationException) {
+                nativeSession.close()
+                throw error
+            } catch (error: Throwable) {
+                Log.e(TAG, "MNN model load failed: ${model.id}", error)
+                synchronized(nativeCallLock) {
+                    if (lifecycleVersion == initializationVersion) {
+                        _state.value = EngineState.Error(error.message ?: "MNN \u6a21\u578b\u52a0\u8f7d\u5931\u8d25")
+                    }
                 }
+                false
+            }
 
-            if (loaded) {
-                session = nativeSession
-                loadedModelId = model.id
-                loadedModel = model
-                _state.value = EngineState.Ready
-                Log.i(TAG, "MNN model loaded: id=${model.id}, elapsedMs=${SystemClock.elapsedRealtime() - startMs}")
-            } else if (_state.value !is EngineState.Error) {
-                _state.value = EngineState.Error("MNN \u6a21\u578b\u52a0\u8f7d\u5931\u8d25")
+            val committed = synchronized(nativeCallLock) {
+                if (lifecycleVersion != initializationVersion ||
+                    _state.value != EngineState.Initializing
+                ) {
+                    false
+                } else {
+                    if (loaded) {
+                        session = nativeSession
+                        loadedModelId = model.id
+                        loadedModel = model
+                        _state.value = EngineState.Ready
+                        Log.i(TAG, "MNN model loaded: id=${model.id}, elapsedMs=${SystemClock.elapsedRealtime() - startMs}")
+                    } else if (_state.value !is EngineState.Error) {
+                        _state.value = EngineState.Error("MNN \u6a21\u578b\u52a0\u8f7d\u5931\u8d25")
+                    }
+                    true
+                }
+            }
+            if (!committed) {
+                nativeSession.close()
+                return@withLock false
             }
             loaded
         }
@@ -117,8 +159,16 @@ class MnnLocalAiEngine @Inject constructor(
             return@callbackFlow
         }
 
-        activeSessionId = session.id
-        activeNativeSession = nativeSession
+        synchronized(nativeCallLock) {
+            if (this@MnnLocalAiEngine.session !== nativeSession ||
+                _state.value != EngineState.Ready
+            ) {
+                close()
+                return@callbackFlow
+            }
+            activeSessionId = session.id
+            activeNativeSession = nativeSession
+        }
         val generationJob = launch(Dispatchers.IO) {
             generationMutex.withLock {
                 var chunkCount = 0
@@ -126,25 +176,37 @@ class MnnLocalAiEngine @Inject constructor(
                 var firstChunkMs: Long? = null
                 val generationStartMs = SystemClock.elapsedRealtime()
                 runCatching {
-                    nativeSession.generate(payload, params) { token ->
-                        if (activeSessionId != session.id) {
-                            false
-                        } else {
-                            val delta = sanitizeChunk(token)
-                            if (delta.isNotEmpty()) {
-                                chunkCount += 1
-                                outputCodePointCount += delta.codePointCount(0, delta.length)
-                                if (firstChunkMs == null) {
-                                    firstChunkMs = SystemClock.elapsedRealtime() - generationStartMs
+                    val shouldGenerate = synchronized(nativeCallLock) {
+                        activeSessionId == session.id && activeNativeSession === nativeSession
+                    }
+                    if (shouldGenerate) {
+                        nativeSession.generate(payload, params) { token ->
+                            if (activeSessionId != session.id) {
+                                false
+                            } else {
+                                val delta = sanitizeChunk(token)
+                                if (delta.isNotEmpty()) {
+                                    chunkCount += 1
+                                    outputCodePointCount += delta.codePointCount(0, delta.length)
+                                    if (firstChunkMs == null) {
+                                        firstChunkMs = SystemClock.elapsedRealtime() - generationStartMs
+                                    }
                                 }
+                                delta.isEmpty() || trySendBlocking(delta).isSuccess
                             }
-                            delta.isEmpty() || trySendBlocking(delta).isSuccess
                         }
                     }
                 }.onFailure { error ->
-                    if (activeSessionId == session.id) {
-                        activeSessionId = null
-                        activeNativeSession = null
+                    val ownsActiveSession = synchronized(nativeCallLock) {
+                        if (activeSessionId != session.id) {
+                            false
+                        } else {
+                            activeSessionId = null
+                            activeNativeSession = null
+                            true
+                        }
+                    }
+                    if (ownsActiveSession) {
                         _state.value = EngineState.Error(error.message ?: "MNN \u751f\u6210\u5931\u8d25")
                         Log.e(TAG, "MNN generation failed: session=${session.id}", error)
                         close(error)
@@ -165,9 +227,11 @@ class MnnLocalAiEngine @Inject constructor(
                             "outputCodePoints=$outputCodePointCount, " +
                             "outputCodePointsPerSecond=$outputCodePointsPerSecond, elapsedMs=$elapsedMs"
                     )
-                    if (activeSessionId == session.id) {
-                        activeSessionId = null
-                        activeNativeSession = null
+                    synchronized(nativeCallLock) {
+                        if (activeSessionId == session.id) {
+                            activeSessionId = null
+                            activeNativeSession = null
+                        }
                     }
                     close()
                 }
@@ -175,28 +239,47 @@ class MnnLocalAiEngine @Inject constructor(
         }
 
         awaitClose {
-            if (activeSessionId == session.id) {
-                nativeSession.stop()
-                activeSessionId = null
-                activeNativeSession = null
+            val sessionToStop = synchronized(nativeCallLock) {
+                if (activeSessionId != session.id) {
+                    null
+                } else {
+                    activeSessionId = null
+                    activeNativeSession = null
+                    nativeSession
+                }
             }
+            sessionToStop?.stop()
             generationJob.cancel()
         }
     }
 
     override fun stopGeneration(session: GenerationSession) {
-        if (activeSessionId == session.id) {
-            activeNativeSession?.stop()
-            activeSessionId = null
-            activeNativeSession = null
+        val nativeSession = synchronized(nativeCallLock) {
+            if (activeSessionId != session.id) {
+                null
+            } else {
+                val activeSession = activeNativeSession
+                activeSessionId = null
+                activeNativeSession = null
+                activeSession
+            }
         }
+        nativeSession?.stop()
     }
 
     override fun release() {
-        activeSessionId = null
-        activeNativeSession = null
-        releaseInternal()
-        _state.value = EngineState.Idle
+        val nativeSessionToStop = synchronized(nativeCallLock) {
+            lifecycleVersion += 1
+            _state.value = EngineState.Idle
+            activeSessionId = null
+            val activeSession = activeNativeSession
+            activeNativeSession = null
+            activeSession
+        }
+        nativeSessionToStop?.stop()
+        synchronized(nativeCallLock) {
+            releaseInternal()
+        }
     }
 
     private fun releaseInternal() {

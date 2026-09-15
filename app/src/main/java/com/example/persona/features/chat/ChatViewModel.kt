@@ -8,8 +8,10 @@ import com.example.persona.core.ai.ChatMessage
 import com.example.persona.core.ai.EngineState
 import com.example.persona.core.ai.GenerationSession
 import com.example.persona.core.base.BaseViewModel
+import com.example.persona.data.remote.CloudGenerationException
 import com.example.persona.data.repository.HybridAiRepository
 import com.example.persona.domain.model.Message
+import com.example.persona.domain.model.MessageStatus
 import com.example.persona.domain.model.Persona
 import com.example.persona.domain.repository.ChatRepository
 import com.example.persona.domain.repository.PersonaRepository
@@ -153,7 +155,8 @@ class ChatViewModel @Inject constructor(
                 personaId = persona.id,
                 content = PLACEHOLDER_THINKING,
                 isFromUser = false,
-                timestamp = System.currentTimeMillis() + 1
+                timestamp = System.currentTimeMillis() + 1,
+                status = MessageStatus.GENERATING
             ),
             persona
         )
@@ -162,41 +165,88 @@ class ChatViewModel @Inject constructor(
         _isCloudMode.value = mode == HybridAiRepository.Mode.CLOUD
         val systemPrompt = buildSystemPrompt(persona)
 
-        var content = ""
+        val content = StringBuilder()
+        var persistedContent = ""
+        var persistedStatus = MessageStatus.GENERATING
+        var lastPersistMs = 0L
         var streamFailed = false
         var stoppedForRepetition = false
+
+        suspend fun persist(
+            text: String,
+            status: MessageStatus = MessageStatus.NORMAL,
+            force: Boolean = false
+        ) {
+            if (!force && text == persistedContent && status == persistedStatus) return
+            chatRepository.updateMessageContent(aiMessageId, text, status)
+            // Treat the in-memory value as committed only after Room succeeds.
+            persistedContent = text
+            persistedStatus = status
+            lastPersistMs = System.currentTimeMillis()
+        }
+
         try {
             hybridRepository.streamResponse(mode, session, systemPrompt, userText, localHistory)
                 .catch { error ->
                     if (error is CancellationException) throw error
                     streamFailed = true
                     Log.e(TAG, "Stream error", error)
-                    val source = if (mode == HybridAiRepository.Mode.LOCAL) "本地 AI" else "云端 AI"
-                    chatRepository.updateMessageContent(aiMessageId, "[$source 错误] ${error.message}")
-                    emitError("生成失败: ${error.message}")
+                    val reason = error.describeForUser(mode)
+                    val failureNotice = "$GENERATION_ERROR_MARKER $reason"
+                    val currentContent = content.toString()
+                    val failureContent = if (currentContent.isBlank()) {
+                        failureNotice
+                    } else {
+                        "$currentContent\n\n$failureNotice"
+                    }
+                    content.setLength(0)
+                    content.append(failureContent)
+                    persist(failureContent, status = MessageStatus.FAILED, force = true)
+                    emitError("生成失败: $reason")
                 }
                 .collect { token ->
                     if (activeGenerationSession?.id != session.id) return@collect
                     if (stoppedForRepetition) return@collect
-                    content += token
-                    if (mode == HybridAiRepository.Mode.LOCAL && content.hasRepetitionLoop()) {
+                    content.append(token)
+                    val currentContent = content.toString()
+                    if (mode == HybridAiRepository.Mode.LOCAL && currentContent.hasRepetitionLoop()) {
                         stoppedForRepetition = true
-                        val cleanedContent = content.trim().appendStopNotice()
-                        chatRepository.updateMessageContent(aiMessageId, cleanedContent)
+                        persist(
+                            currentContent.trim().appendStopNotice(),
+                            status = MessageStatus.STOPPED
+                        )
                         hybridRepository.stopGeneration(session)
                         return@collect
-                    } else {
-                        chatRepository.updateMessageContent(aiMessageId, content)
+                    }
+                    if (System.currentTimeMillis() - lastPersistMs >= PERSIST_INTERVAL_MS) {
+                        persist(currentContent, status = MessageStatus.GENERATING)
                     }
                 }
 
-            if (!streamFailed && !stoppedForRepetition && content.isEmpty() && activeGenerationSession?.id == session.id) {
-                chatRepository.updateMessageContent(aiMessageId, EMPTY_RESPONSE_MESSAGE)
+            if (!streamFailed && !stoppedForRepetition) {
+                if (content.isEmpty()) {
+                    if (activeGenerationSession?.id == session.id) {
+                        persist(EMPTY_RESPONSE_MESSAGE, status = MessageStatus.FAILED)
+                    }
+                } else {
+                    persist(content.toString(), status = MessageStatus.NORMAL)
+                }
             }
         } catch (error: CancellationException) {
-            if (content.isEmpty()) {
-                withContext(NonCancellable) {
-                    chatRepository.updateMessageContent(aiMessageId, STOPPED_RESPONSE_MESSAGE)
+            withContext(NonCancellable) {
+                runCatching {
+                    val stoppedContent = when {
+                        stoppedForRepetition -> content.toString().trim().appendStopNotice()
+                        content.isEmpty() -> STOPPED_RESPONSE_MESSAGE
+                        else -> content.toString()
+                    }
+                    persist(
+                        text = stoppedContent,
+                        status = MessageStatus.STOPPED,
+                        force = true
+                    )
+                }.onFailure { persistError ->
+                    Log.e(TAG, "Failed to persist stopped generation", persistError)
                 }
             }
             throw error
@@ -248,8 +298,10 @@ class ChatViewModel @Inject constructor(
         return filter { message ->
             val content = message.content.trim()
             content.isNotBlank() &&
+                message.status == MessageStatus.NORMAL &&
                 content.length <= MAX_HISTORY_MESSAGE_CHARS &&
                 content !in HISTORY_EXCLUDED_MESSAGES &&
+                !content.contains(GENERATION_ERROR_MARKER) &&
                 !content.contains(LOCAL_FALLBACK_NOTICE_MARKER) &&
                 !content.hasRepetitionLoop()
         }
@@ -292,6 +344,15 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    private fun Throwable.describeForUser(mode: HybridAiRepository.Mode): String {
+        if (this is CloudGenerationException) {
+            return message.orEmpty().ifBlank { CLOUD_GENERIC_ERROR }
+        }
+        val source = if (mode == HybridAiRepository.Mode.LOCAL) "本地 AI" else "云端 AI"
+        val detail = message?.takeIf(String::isNotBlank) ?: return "$source 生成失败，请稍后再试。"
+        return "$source 错误: $detail"
+    }
+
     private fun parseModeOverride(text: String): Pair<Boolean, String> {
         val trimmed = text.trim()
         val forceCloud = trimmed.startsWith(CLOUD_PREFIX, ignoreCase = true)
@@ -305,10 +366,13 @@ class ChatViewModel @Inject constructor(
     private companion object {
         const val TAG = "ChatViewModel"
         const val LOCAL_HISTORY_LIMIT = 12
+        const val PERSIST_INTERVAL_MS = 100L
         const val PLACEHOLDER_THINKING = "正在思考..."
         const val STOPPED_RESPONSE_MESSAGE = "已停止生成"
         const val EMPTY_RESPONSE_MESSAGE = "未收到回复，请重试。"
         const val REPETITION_STOPPED_MESSAGE = "已停止重复输出。"
+        const val CLOUD_GENERIC_ERROR = "云端 AI 生成失败，请稍后再试。"
+        const val GENERATION_ERROR_MARKER = "[生成失败]"
         const val LOCAL_FALLBACK_NOTICE_MARKER = "本地 AI 生成中断"
         const val CLOUD_PREFIX = "@cloud"
         const val MAX_HISTORY_MESSAGE_CHARS = 1500

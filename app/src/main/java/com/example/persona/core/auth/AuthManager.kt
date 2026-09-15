@@ -179,17 +179,25 @@ class AuthManager @Inject constructor() {
     }
 
     private suspend fun awaitUserInfo(
-        block: (AuthCallback<UserInfo>) -> Unit,
+        block: (AuthCallback<UserInfo?>) -> Unit,
     ): UserInfo = suspendCancellableCoroutine { continuation ->
         try {
-            block(object : AuthCallback<UserInfo> {
-                override fun call(code: Int, message: String, data: UserInfo) {
+            block(object : AuthCallback<UserInfo?> {
+                override fun call(code: Int, message: String, data: UserInfo?) {
                     if (!continuation.isActive) {
                         return
                     }
 
                     if (code == 200) {
-                        continuation.resume(data)
+                        if (data != null) {
+                            continuation.resume(data)
+                        } else {
+                            continuation.resumeWithException(
+                                IllegalStateException(
+                                    message.ifBlank { "Authing returned empty user info" }
+                                )
+                            )
+                        }
                     } else {
                         continuation.resumeWithException(
                             IllegalStateException(
