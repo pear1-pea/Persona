@@ -2,6 +2,7 @@ package com.example.persona.data.mapper
 
 import com.example.persona.data.local.entity.MessageEntity
 import com.example.persona.domain.model.Message
+import com.example.persona.domain.model.MessageStatus
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -12,7 +13,8 @@ class MessageMapperTest {
         personaId = "persona-1",
         content = "Hello, world!",
         isFromUser = true,
-        timestamp = 1000L
+        timestamp = 1000L,
+        status = "FAILED"
     )
 
     @Test
@@ -24,6 +26,7 @@ class MessageMapperTest {
         assertEquals(entity.content, domain.content)
         assertEquals(entity.isFromUser, domain.isFromUser)
         assertEquals(entity.timestamp, domain.timestamp)
+        assertEquals(MessageStatus.FAILED, domain.status)
     }
 
     @Test
@@ -33,7 +36,8 @@ class MessageMapperTest {
             personaId = "persona-2",
             content = "Hi back!",
             isFromUser = false,
-            timestamp = 2000L
+            timestamp = 2000L,
+            status = MessageStatus.STOPPED
         )
         val result = domain.toEntity()
 
@@ -42,6 +46,7 @@ class MessageMapperTest {
         assertEquals(domain.content, result.content)
         assertEquals(domain.isFromUser, result.isFromUser)
         assertEquals(domain.timestamp, result.timestamp)
+        assertEquals("STOPPED", result.status)
     }
 
     @Test

@@ -8,12 +8,19 @@ internal fun interface NativeTokenCallback {
 }
 
 internal class NativeMnnSession {
+    private val handleLock = Any()
+    private val generationCloseLock = Any()
+
+    @Volatile
     private var handle = 0L
 
     fun load(modelConfigPath: String): Boolean {
         ensureLibraryLoaded()
-        handle = nativeCreate(modelConfigPath)
-        return handle != 0L
+        val nativeHandle = nativeCreate(modelConfigPath)
+        synchronized(handleLock) {
+            handle = nativeHandle
+        }
+        return nativeHandle != 0L
     }
 
     fun generate(
@@ -21,39 +28,53 @@ internal class NativeMnnSession {
         params: GenerationParams,
         onToken: (String) -> Boolean
     ) {
-        check(handle != 0L) { "MNN session has not been loaded" }
-        when (payload) {
-            is NativePromptPayload.ChatMessages -> nativeGenerateChatMessages(
-                handle = handle,
-                roles = payload.messages.map { it.role }.toTypedArray(),
-                contents = payload.messages.map { it.content }.toTypedArray(),
-                stopWords = payload.stopWords.toTypedArray(),
-                temperature = params.temperature,
-                topP = params.topP,
-                maxTokens = params.maxTokens,
-                callback = NativeTokenCallback(onToken)
-            )
+        synchronized(generationCloseLock) {
+            val nativeHandle = synchronized(handleLock) { handle }
+            check(nativeHandle != 0L) { "MNN session has not been loaded" }
+            when (payload) {
+                is NativePromptPayload.ChatMessages -> nativeGenerateChatMessages(
+                    handle = nativeHandle,
+                    roles = payload.messages.map { it.role }.toTypedArray(),
+                    contents = payload.messages.map { it.content }.toTypedArray(),
+                    stopWords = payload.stopWords.toTypedArray(),
+                    temperature = params.temperature,
+                    topP = params.topP,
+                    maxTokens = params.maxTokens,
+                    callback = NativeTokenCallback(onToken)
+                )
 
-            is NativePromptPayload.RawText -> nativeGenerateRawText(
-                handle = handle,
-                promptText = payload.text,
-                stopWords = payload.stopWords.toTypedArray(),
-                temperature = params.temperature,
-                topP = params.topP,
-                maxTokens = params.maxTokens,
-                callback = NativeTokenCallback(onToken)
-            )
+                is NativePromptPayload.RawText -> nativeGenerateRawText(
+                    handle = nativeHandle,
+                    promptText = payload.text,
+                    stopWords = payload.stopWords.toTypedArray(),
+                    temperature = params.temperature,
+                    topP = params.topP,
+                    maxTokens = params.maxTokens,
+                    callback = NativeTokenCallback(onToken)
+                )
+            }
         }
     }
 
     fun stop() {
-        if (handle != 0L) nativeStop(handle)
+        synchronized(handleLock) {
+            if (handle != 0L) nativeStop(handle)
+        }
     }
 
     fun close() {
-        if (handle != 0L) {
-            nativeDestroy(handle)
-            handle = 0L
+        val nativeHandle = synchronized(handleLock) {
+            val current = handle
+            if (current != 0L) {
+                nativeStop(current)
+                handle = 0L
+            }
+            current
+        }
+        if (nativeHandle == 0L) return
+
+        synchronized(generationCloseLock) {
+            nativeDestroy(nativeHandle)
         }
     }
 

@@ -3,6 +3,7 @@ package com.example.persona.data.repository
 import com.example.persona.data.local.dao.MessageDao
 import com.example.persona.data.local.entity.MessageEntity
 import com.example.persona.domain.model.Message
+import com.example.persona.domain.model.MessageStatus
 import com.example.persona.domain.model.Persona
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -40,11 +41,11 @@ class RoomChatRepositoryTest {
     fun `updateMessageContent updates existing message`() = runTest {
         whenever(messageDao.getMessageById("m1")).thenReturn(messageEntity)
 
-        repo.updateMessageContent("m1", "Updated content")
+        repo.updateMessageContent("m1", "Updated content", MessageStatus.FAILED)
 
         verify(messageDao).getMessageById("m1")
         verify(messageDao).updateMessage(
-            messageEntity.copy(content = "Updated content")
+            messageEntity.copy(content = "Updated content", status = "FAILED")
         )
     }
 

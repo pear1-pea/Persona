@@ -8,6 +8,7 @@ import com.example.persona.data.local.dao.MessageDao
 import com.example.persona.data.mapper.toDomain
 import com.example.persona.data.mapper.toEntity
 import com.example.persona.domain.model.Message
+import com.example.persona.domain.model.MessageStatus
 import com.example.persona.domain.model.Persona
 import com.example.persona.domain.repository.ChatRepository
 import kotlinx.coroutines.flow.Flow
@@ -43,10 +44,10 @@ class RoomChatRepository @Inject constructor(
         messageDao.insertMessage(message.toEntity())
     }
 
-    override suspend fun updateMessageContent(id: String, content: String) {
+    override suspend fun updateMessageContent(id: String, content: String, status: MessageStatus) {
         val entity = messageDao.getMessageById(id)
         if (entity != null) {
-            val updated = entity.copy(content = content)
+            val updated = entity.copy(content = content, status = status.name)
             messageDao.updateMessage(updated)
         }
     }

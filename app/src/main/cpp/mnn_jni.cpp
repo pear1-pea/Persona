@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <mutex>
 #include <ostream>
@@ -15,6 +16,105 @@
 namespace {
 
 constexpr const char* DEFAULT_STOP_WORD = "<eop>";
+constexpr uint32_t REPLACEMENT_CODE_POINT = 0xFFFD;
+
+void appendUtf8(std::string& output, uint32_t codePoint) {
+    if (codePoint <= 0x7F) {
+        output.push_back(static_cast<char>(codePoint));
+    } else if (codePoint <= 0x7FF) {
+        output.push_back(static_cast<char>(0xC0 | (codePoint >> 6)));
+        output.push_back(static_cast<char>(0x80 | (codePoint & 0x3F)));
+    } else if (codePoint <= 0xFFFF) {
+        output.push_back(static_cast<char>(0xE0 | (codePoint >> 12)));
+        output.push_back(static_cast<char>(0x80 | ((codePoint >> 6) & 0x3F)));
+        output.push_back(static_cast<char>(0x80 | (codePoint & 0x3F)));
+    } else {
+        output.push_back(static_cast<char>(0xF0 | (codePoint >> 18)));
+        output.push_back(static_cast<char>(0x80 | ((codePoint >> 12) & 0x3F)));
+        output.push_back(static_cast<char>(0x80 | ((codePoint >> 6) & 0x3F)));
+        output.push_back(static_cast<char>(0x80 | (codePoint & 0x3F)));
+    }
+}
+
+std::string utf16ToUtf8(const jchar* source, jsize length) {
+    std::string output;
+    if (source == nullptr || length <= 0) return output;
+    output.reserve(static_cast<size_t>(length) * 3);
+
+    for (jsize index = 0; index < length; ++index) {
+        uint32_t codePoint = source[index];
+        if (codePoint >= 0xD800 && codePoint <= 0xDBFF) {
+            if (index + 1 < length) {
+                const uint32_t low = source[index + 1];
+                if (low >= 0xDC00 && low <= 0xDFFF) {
+                    codePoint = 0x10000 + ((codePoint - 0xD800) << 10) + (low - 0xDC00);
+                    ++index;
+                } else {
+                    codePoint = REPLACEMENT_CODE_POINT;
+                }
+            } else {
+                codePoint = REPLACEMENT_CODE_POINT;
+            }
+        } else if (codePoint >= 0xDC00 && codePoint <= 0xDFFF) {
+            codePoint = REPLACEMENT_CODE_POINT;
+        }
+        appendUtf8(output, codePoint);
+    }
+    return output;
+}
+
+std::u16string utf8ToUtf16(const std::string& source) {
+    std::u16string output;
+    output.reserve(source.size());
+
+    size_t index = 0;
+    while (index < source.size()) {
+        const auto lead = static_cast<unsigned char>(source[index]);
+        uint32_t codePoint = REPLACEMENT_CODE_POINT;
+        size_t length = 1;
+
+        if ((lead & 0x80) == 0x00) {
+            codePoint = lead;
+        } else if ((lead & 0xE0) == 0xC0 && index + 1 < source.size()) {
+            const auto b1 = static_cast<unsigned char>(source[index + 1]);
+            if (lead >= 0xC2 && (b1 & 0xC0) == 0x80) {
+                codePoint = ((lead & 0x1F) << 6) | (b1 & 0x3F);
+                length = 2;
+            }
+        } else if ((lead & 0xF0) == 0xE0 && index + 2 < source.size()) {
+            const auto b1 = static_cast<unsigned char>(source[index + 1]);
+            const auto b2 = static_cast<unsigned char>(source[index + 2]);
+            if ((b1 & 0xC0) == 0x80 && (b2 & 0xC0) == 0x80 &&
+                !(lead == 0xE0 && b1 < 0xA0) &&
+                !(lead == 0xED && b1 >= 0xA0)) {
+                codePoint = ((lead & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F);
+                length = 3;
+            }
+        } else if ((lead & 0xF8) == 0xF0 && index + 3 < source.size()) {
+            const auto b1 = static_cast<unsigned char>(source[index + 1]);
+            const auto b2 = static_cast<unsigned char>(source[index + 2]);
+            const auto b3 = static_cast<unsigned char>(source[index + 3]);
+            if ((b1 & 0xC0) == 0x80 && (b2 & 0xC0) == 0x80 && (b3 & 0xC0) == 0x80 &&
+                !(lead == 0xF0 && b1 < 0x90) &&
+                !(lead == 0xF4 && b1 >= 0x90) &&
+                lead <= 0xF4) {
+                codePoint = ((lead & 0x07) << 18) | ((b1 & 0x3F) << 12) |
+                    ((b2 & 0x3F) << 6) | (b3 & 0x3F);
+                length = 4;
+            }
+        }
+
+        if (codePoint <= 0xFFFF) {
+            output.push_back(static_cast<char16_t>(codePoint));
+        } else {
+            const uint32_t shifted = codePoint - 0x10000;
+            output.push_back(static_cast<char16_t>(0xD800 | (shifted >> 10)));
+            output.push_back(static_cast<char16_t>(0xDC00 | (shifted & 0x3FF)));
+        }
+        index += length;
+    }
+    return output;
+}
 
 class CallbackStreamBuffer final : public std::streambuf {
 public:
@@ -28,40 +128,96 @@ protected:
         return size;
     }
 
+    // Single-character writes bypass xsputn, so they are routed here as well.
+    int_type overflow(int_type character) override {
+        if (character == traits_type::eof()) return traits_type::not_eof(character);
+        const auto byte = static_cast<char>(traits_type::to_char_type(character));
+        if (callback_) callback_(std::string(1, byte));
+        return traits_type::not_eof(character);
+    }
+
 private:
     std::function<void(const std::string&)> callback_;
 };
 
 class Utf8Accumulator final {
 public:
-    bool appendAndEmit(const std::string& chunk, const std::function<bool(const std::string&)>& emit) {
+    using Emit = std::function<bool(const std::string&)>;
+
+    bool appendAndEmit(const std::string& chunk, const Emit& emit) {
         pending_ += chunk;
-        size_t completeBytes = 0;
-        while (completeBytes < pending_.size()) {
-            const auto length = utf8CodePointLength(static_cast<unsigned char>(pending_[completeBytes]));
+        std::string ready;
+        size_t index = 0;
+        while (index < pending_.size()) {
+            const auto length = utf8CodePointLength(static_cast<unsigned char>(pending_[index]));
             if (length == 0) {
-                pending_.erase(completeBytes, 1);
+                ready += REPLACEMENT_CHARACTER;
+                ++index;
                 continue;
             }
-            if (completeBytes + length > pending_.size()) break;
-            completeBytes += length;
+            if (index + length > pending_.size()) break;
+            if (!isValidCodePoint(pending_, index, length)) {
+                ready += REPLACEMENT_CHARACTER;
+                ++index;
+                continue;
+            }
+            ready.append(pending_, index, length);
+            index += length;
         }
+        pending_.erase(0, index);
 
-        if (completeBytes > 0) {
-            const auto completeChunk = pending_.substr(0, completeBytes);
-            pending_.erase(0, completeBytes);
-            return emit(completeChunk);
+        if (ready.empty()) return true;
+        return emit(ready);
+    }
+
+    // A truncated sequence at end-of-generation can never be completed, so it is
+    // surfaced as U+FFFD instead of being dropped or passed on as invalid UTF-8.
+    bool flush(const Emit& emit) {
+        if (pending_.empty()) return true;
+        std::string ready;
+        size_t index = 0;
+        while (index < pending_.size()) {
+            const auto length = utf8CodePointLength(static_cast<unsigned char>(pending_[index]));
+            if (length == 0 || index + length > pending_.size() ||
+                !isValidCodePoint(pending_, index, length)) {
+                ready += REPLACEMENT_CHARACTER;
+                ++index;
+                continue;
+            }
+            ready.append(pending_, index, length);
+            index += length;
         }
-        return true;
+        pending_.clear();
+        return ready.empty() || emit(ready);
     }
 
 private:
+    static constexpr const char* REPLACEMENT_CHARACTER = "\xEF\xBF\xBD";
+
     static size_t utf8CodePointLength(unsigned char lead) {
         if ((lead & 0x80) == 0x00) return 1;
         if ((lead & 0xE0) == 0xC0) return 2;
         if ((lead & 0xF0) == 0xE0) return 3;
         if ((lead & 0xF8) == 0xF0) return 4;
         return 0;
+    }
+
+    static bool isValidCodePoint(const std::string& text, size_t start, size_t length) {
+        const auto lead = static_cast<unsigned char>(text[start]);
+        if ((length == 2 && lead < 0xC2) ||
+            (length == 3 && lead == 0xE0 && static_cast<unsigned char>(text[start + 1]) < 0xA0) ||
+            (length == 3 && lead == 0xED && static_cast<unsigned char>(text[start + 1]) >= 0xA0) ||
+            (length == 4 && lead == 0xF0 && static_cast<unsigned char>(text[start + 1]) < 0x90) ||
+            (length == 4 && lead == 0xF4 && static_cast<unsigned char>(text[start + 1]) >= 0x90) ||
+            (length == 4 && lead > 0xF4)) {
+            return false;
+        }
+        for (size_t offset = 1; offset < length; ++offset) {
+            if ((static_cast<unsigned char>(text[start + offset]) & 0xC0) != 0x80) {
+                return false;
+            }
+        }
+        return true;
     }
 
     std::string pending_;
@@ -79,17 +235,86 @@ struct MnnSession {
     }
 };
 
-struct StopMatch {
-    bool found = false;
-    size_t position = std::string::npos;
-    std::string value;
+// A stop word can straddle two decoder chunks, so text whose tail is still a
+// possible stop-word prefix is withheld until it can be resolved either way.
+class StopWordMatcher final {
+public:
+    struct Result {
+        std::string text;
+        bool matched = false;
+        std::string value;
+    };
+
+    explicit StopWordMatcher(std::vector<std::string> stopWords)
+        : stopWords_(std::move(stopWords)) {
+        for (const auto& stopWord : stopWords_) {
+            maxStopWordLength_ = std::max(maxStopWordLength_, stopWord.size());
+        }
+    }
+
+    Result append(const std::string& chunk) {
+        buffer_ += chunk;
+        Result result;
+
+        size_t matchPosition = std::string::npos;
+        for (const auto& stopWord : stopWords_) {
+            const auto position = buffer_.find(stopWord);
+            if (position == std::string::npos) continue;
+            if (matchPosition == std::string::npos ||
+                position < matchPosition ||
+                (position == matchPosition && stopWord.size() > result.value.size())) {
+                matchPosition = position;
+                result.value = stopWord;
+            }
+        }
+
+        if (matchPosition != std::string::npos) {
+            result.matched = true;
+            result.text = buffer_.substr(0, matchPosition);
+            buffer_.clear();
+            return result;
+        }
+
+        const auto withheld = pendingPrefixLength();
+        const auto emittable = buffer_.size() - withheld;
+        result.text = buffer_.substr(0, emittable);
+        buffer_.erase(0, emittable);
+        return result;
+    }
+
+    std::string flush() {
+        std::string remaining;
+        remaining.swap(buffer_);
+        return remaining;
+    }
+
+private:
+    size_t pendingPrefixLength() const {
+        if (maxStopWordLength_ == 0) return 0;
+        const auto limit = std::min(buffer_.size(), maxStopWordLength_ - 1);
+        for (size_t length = limit; length > 0; --length) {
+            const auto start = buffer_.size() - length;
+            for (const auto& stopWord : stopWords_) {
+                if (stopWord.size() > length &&
+                    stopWord.compare(0, length, buffer_, start, length) == 0) {
+                    return length;
+                }
+            }
+        }
+        return 0;
+    }
+
+    std::vector<std::string> stopWords_;
+    size_t maxStopWordLength_ = 0;
+    std::string buffer_;
 };
 
 std::string toString(JNIEnv* env, jstring value) {
     if (value == nullptr) return {};
-    const char* chars = env->GetStringUTFChars(value, nullptr);
-    std::string result(chars == nullptr ? "" : chars);
-    if (chars != nullptr) env->ReleaseStringUTFChars(value, chars);
+    const auto length = env->GetStringLength(value);
+    const auto* chars = env->GetStringChars(value, nullptr);
+    std::string result = utf16ToUtf8(chars, length);
+    if (chars != nullptr) env->ReleaseStringChars(value, chars);
     return result;
 }
 
@@ -153,22 +378,13 @@ MNN::Transformer::ChatMessages toChatMessages(
     return messages;
 }
 
-StopMatch findStopMatch(const std::string& token, const std::vector<std::string>& stopWords) {
-    StopMatch match;
-    for (const auto& stopWord : stopWords) {
-        const auto position = token.find(stopWord);
-        if (position != std::string::npos &&
-            (!match.found || position < match.position)) {
-            match.found = true;
-            match.position = position;
-            match.value = stopWord;
-        }
-    }
-    return match;
-}
-
 bool callTokenCallback(JNIEnv* env, jobject callback, jmethodID onToken, const std::string& token) {
-    jstring javaToken = env->NewStringUTF(token.c_str());
+    const auto utf16Token = utf8ToUtf16(token);
+    jstring javaToken = env->NewString(
+        reinterpret_cast<const jchar*>(utf16Token.data()),
+        static_cast<jsize>(utf16Token.size())
+    );
+    if (javaToken == nullptr) return false;
     const auto keepGenerating = env->CallBooleanMethod(callback, onToken, javaToken);
     env->DeleteLocalRef(javaToken);
     return keepGenerating == JNI_TRUE && !env->ExceptionCheck();
@@ -226,12 +442,23 @@ void runGeneration(
     bool pendingEop = false;
     std::stringstream responseBuffer;
     Utf8Accumulator utf8Accumulator;
+    StopWordMatcher stopMatcher(stopWords);
 
     auto emitToken = [&](const std::string& completeToken) {
         const auto shouldContinue = callTokenCallback(env, callback, onToken, completeToken);
         if (shouldContinue) {
             responseBuffer << completeToken;
         } else {
+            session->stopRequested = true;
+            markUserCancelled(session->llm);
+        }
+        return shouldContinue;
+    };
+
+    auto emitThroughUtf8 = [&](const std::string& text) {
+        if (text.empty()) return true;
+        const auto shouldContinue = utf8Accumulator.appendAndEmit(text, emitToken);
+        if (!shouldContinue) {
             session->stopRequested = true;
             markUserCancelled(session->llm);
         }
@@ -277,27 +504,13 @@ void runGeneration(
             return;
         }
 
-        const auto stopMatch = findStopMatch(token, stopWords);
-        const auto tokenBeforeStop = stopMatch.found
-            ? token.substr(0, stopMatch.position)
-            : token;
+        const auto stopMatch = stopMatcher.append(token);
+        if (!emitThroughUtf8(stopMatch.text)) return;
 
-        if (!tokenBeforeStop.empty()) {
-            const auto shouldContinue = utf8Accumulator.appendAndEmit(
-                tokenBeforeStop,
-                [&](const std::string& completeToken) {
-                    return emitToken(completeToken);
-                }
-            );
-            if (!shouldContinue) {
-                session->stopRequested = true;
-                markUserCancelled(session->llm);
-            }
-        }
-
-        if (stopMatch.found && stopMatch.value == DEFAULT_STOP_WORD) {
+        if (!stopMatch.matched) return;
+        if (stopMatch.value == DEFAULT_STOP_WORD) {
             pendingEop = true;
-        } else if (stopMatch.found) {
+        } else {
             generationTextEnd = true;
         }
     });
@@ -312,6 +525,14 @@ void runGeneration(
         resolveAndroidSteppingEop();
     }
     finalizePendingEop();
+
+    if (!session->stopRequested) {
+        // Text withheld as a potential stop-word prefix turned out to be real
+        // output, and any truncated code point must still be surfaced.
+        if (emitThroughUtf8(stopMatcher.flush())) {
+            utf8Accumulator.flush(emitToken);
+        }
+    }
 
     const auto responseText = responseBuffer.str();
     if (!session->stopRequested && !responseText.empty() && syncPromptCache) {

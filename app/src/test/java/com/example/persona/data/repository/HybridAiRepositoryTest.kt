@@ -9,10 +9,12 @@ import com.example.persona.core.ai.LocalAiEngine
 import com.example.persona.core.ai.LocalModelManager
 import com.example.persona.core.ai.ModelFamilies
 import com.example.persona.core.ai.PromptFormats
+import com.example.persona.data.remote.CloudGenerationException
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
@@ -20,6 +22,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.mockito.kotlin.atLeastOnce
@@ -203,6 +206,34 @@ class HybridAiRepositoryTest {
         )
         assertEquals(HybridAiRepository.Mode.CLOUD, repository.activeMode.value)
         verify(cloudRepository).streamResponse("system", "user", emptyList())
+    }
+
+    @Test
+    fun `cloud fallback failure preserves local output and propagates cloud error`() = runTest {
+        whenever(localEngine.streamResponse(any(), any(), any(), any())).thenReturn(flow {
+            emit("partial local")
+            throw IllegalStateException("native stopped")
+        })
+        whenever(cloudRepository.streamResponse(any(), any(), any())).thenReturn(flow {
+            throw CloudGenerationException.Network(IllegalStateException("offline"))
+        })
+
+        val tokens = mutableListOf<String>()
+        val thrown = runCatching {
+            repository.streamResponse(
+                mode = HybridAiRepository.Mode.LOCAL,
+                session = GenerationSession(),
+                systemPrompt = "system",
+                userMessage = "user"
+            ).collect { tokens += it }
+        }.exceptionOrNull()
+
+        assertEquals(
+            listOf("partial local", "\n\n[本地 AI 生成中断，已切换到云端继续。]\n"),
+            tokens
+        )
+        assertTrue(thrown is CloudGenerationException.Network)
+        assertEquals(HybridAiRepository.Mode.CLOUD, repository.activeMode.value)
     }
 
     @Test

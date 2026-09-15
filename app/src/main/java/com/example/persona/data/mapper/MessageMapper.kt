@@ -2,6 +2,7 @@ package com.example.persona.data.mapper
 
 import com.example.persona.data.local.entity.MessageEntity
 import com.example.persona.domain.model.Message
+import com.example.persona.domain.model.MessageStatus
 
 fun MessageEntity.toDomain(): Message {
     return Message(
@@ -9,7 +10,9 @@ fun MessageEntity.toDomain(): Message {
         personaId = personaId,
         content = content,
         isFromUser = isFromUser,
-        timestamp = timestamp
+        timestamp = timestamp,
+        status = runCatching { MessageStatus.valueOf(status) }
+            .getOrDefault(MessageStatus.NORMAL)
     )
 }
 
@@ -19,6 +22,7 @@ fun Message.toEntity(): MessageEntity {
         personaId = personaId,
         content = content,
         isFromUser = isFromUser,
-        timestamp = timestamp
+        timestamp = timestamp,
+        status = status.name
     )
 }

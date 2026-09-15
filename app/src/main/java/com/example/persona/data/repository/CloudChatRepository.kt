@@ -2,17 +2,30 @@ package com.example.persona.data.repository
 
 import android.util.Log
 import com.example.persona.core.ai.ChatMessage
+import com.example.persona.data.remote.CloudGenerationException
 import com.example.persona.data.remote.DeepSeekApi
 import com.example.persona.data.remote.DeepSeekConfig
 import com.example.persona.data.remote.dto.ChatRequest
 import com.example.persona.data.remote.dto.ChatResponse
 import com.example.persona.data.remote.dto.MessageDto
 import com.google.gson.Gson
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.isActive
+import okhttp3.ResponseBody
+import retrofit2.Call
+import retrofit2.Callback
+import retrofit2.Response
 import javax.inject.Inject
+import java.io.BufferedReader
+import java.util.concurrent.atomic.AtomicReference
 
 class CloudChatRepository @Inject constructor(
     private val api: DeepSeekApi,
@@ -22,10 +35,9 @@ class CloudChatRepository @Inject constructor(
         systemPrompt: String,
         userMessage: String,
         history: List<ChatMessage> = emptyList()
-    ): Flow<String> = flow {
+    ): Flow<String> = callbackFlow {
         if (config.apiKey.isBlank()) {
-            emit(DEEPSEEK_NOT_CONFIGURED_MESSAGE)
-            return@flow
+            throw CloudGenerationException.NotConfigured()
         }
 
         val messages = buildMessages(systemPrompt, userMessage, history)
@@ -34,43 +46,82 @@ class CloudChatRepository @Inject constructor(
             messages = messages
         )
 
-        val response = try {
-            api.streamChat(request).execute()
-        } catch (e: Exception) {
-            Log.e(TAG, "DeepSeek network error", e)
-            emit(DEEPSEEK_NETWORK_ERROR_MESSAGE)
-            return@flow
-        }
+        val call = api.streamChat(request)
+        val source = AtomicReference<BufferedReader?>()
+        val readerJob = AtomicReference<kotlinx.coroutines.Job?>()
 
-        if (!response.isSuccessful) {
-            val errorBody = response.errorBody()?.string().orEmpty()
-            Log.e(TAG, "DeepSeek error ${response.code()}: $errorBody")
-            emit("Error: DeepSeek 云端请求失败(${response.code()})，请检查 API Key、模型名或余额。")
-            return@flow
-        }
-
-        val source = response.body()?.byteStream()?.bufferedReader() ?: return@flow
-        val gson = Gson()
-
-        try {
-            var line: String? = source.readLine()
-            while (line != null) {
-                if (line.startsWith("data:")) {
-                    val jsonStr = line.substring(5).trim()
-
-                    if (jsonStr == "[DONE]") break
-
-                    runCatching {
-                        val chatResponse = gson.fromJson(jsonStr, ChatResponse::class.java)
-                        chatResponse.choices.firstOrNull()?.delta?.content
-                    }.getOrNull()?.takeIf { it.isNotEmpty() }?.let { content ->
-                        emit(content)
-                    }
+        call.enqueue(object : Callback<ResponseBody> {
+            override fun onResponse(call: Call<ResponseBody>, response: Response<ResponseBody>) {
+                if (!response.isSuccessful) {
+                    val errorBody = response.errorBody()?.string().orEmpty()
+                    Log.e(TAG, "DeepSeek error ${response.code()}: $errorBody")
+                    close(CloudGenerationException.HttpError(response.code()))
+                    return
                 }
-                line = source.readLine()
+
+                val body = response.body()
+                if (body == null) {
+                    close()
+                    return
+                }
+
+                if (!isActive) {
+                    body.close()
+                    return
+                }
+
+                val bodyReader = body.byteStream().bufferedReader()
+                source.set(bodyReader)
+                if (!isActive) {
+                    bodyReader.close()
+                    return
+                }
+                readerJob.set(launch(Dispatchers.IO) {
+                    val gson = Gson()
+                    try {
+                        var line: String? = bodyReader.readLine()
+                        while (line != null) {
+                            currentCoroutineContext().ensureActive()
+                            if (line.startsWith("data:")) {
+                                val jsonStr = line.substring(5).trim()
+
+                                if (jsonStr == "[DONE]") break
+
+                                runCatching {
+                                    val chatResponse = gson.fromJson(jsonStr, ChatResponse::class.java)
+                                    chatResponse.choices.firstOrNull()?.delta?.content
+                                }.getOrNull()?.takeIf { it.isNotEmpty() }?.let { content ->
+                                    send(content)
+                                }
+                            }
+                            line = bodyReader.readLine()
+                        }
+                        close()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        currentCoroutineContext().ensureActive()
+                        Log.e(TAG, "DeepSeek stream read error", e)
+                        close(CloudGenerationException.Network(e))
+                    } finally {
+                        bodyReader.close()
+                    }
+                })
             }
-        } finally {
-            source.close()
+
+            override fun onFailure(call: Call<ResponseBody>, error: Throwable) {
+                if (error is CancellationException) {
+                    close(error)
+                } else {
+                    close(CloudGenerationException.Network(error))
+                }
+            }
+        })
+
+        awaitClose {
+            call.cancel()
+            readerJob.get()?.cancel()
+            source.get()?.close()
         }
     }.flowOn(Dispatchers.IO)
 
@@ -127,7 +178,5 @@ class CloudChatRepository @Inject constructor(
         const val TAG = "CloudChatRepository"
         const val DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash"
         const val CLOUD_HISTORY_LIMIT = 12
-        const val DEEPSEEK_NOT_CONFIGURED_MESSAGE = "Error: DeepSeek 未配置 API Key，请在 local.properties 填写 DEEPSEEK_API_KEY。"
-        const val DEEPSEEK_NETWORK_ERROR_MESSAGE = "Error: DeepSeek 云端连接失败，请稍后再试。"
     }
 }

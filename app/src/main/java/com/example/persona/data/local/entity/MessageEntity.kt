@@ -23,5 +23,6 @@ data class MessageEntity(
     val personaId: String,   
     val content: String,
     val isFromUser: Boolean, 
-    val timestamp: Long      
+    val timestamp: Long,
+    val status: String = "NORMAL"
 )
