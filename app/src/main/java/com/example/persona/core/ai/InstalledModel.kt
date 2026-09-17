@@ -13,5 +13,7 @@ data class InstalledModel(
     val contextWindow: Int,
     val minRamGb: Int = 0,
     val minSdk: Int = 0,
-    val manifestPath: String = ""
+    val manifestPath: String = "",
+    val requiredAbis: List<String> = emptyList(),
+    val totalSizeBytes: Long = 0L
 )

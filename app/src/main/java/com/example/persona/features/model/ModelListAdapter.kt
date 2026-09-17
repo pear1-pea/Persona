@@ -71,7 +71,7 @@ class ModelListAdapter(
                 }
             )
             btnSelect.text = if (item.isCurrent) "当前使用" else "设为当前"
-            btnSelect.isEnabled = item.isReady && !item.isCurrent
+            btnSelect.isEnabled = item.isSelectable && !item.isCurrent
             btnSelect.setOnClickListener { onSelect(item) }
             btnDelete.setOnClickListener { onDelete(item) }
             btnDetails.setOnClickListener { onDetails(item) }
@@ -82,6 +82,8 @@ class ModelListAdapter(
             return when (kind) {
                 ModelStatusKind.Ready,
                 ModelStatusKind.Current -> ContextCompat.getColor(context, R.color.accent_cyan)
+                ModelStatusKind.Risky -> ContextCompat.getColor(context, android.R.color.holo_orange_dark)
+                ModelStatusKind.Blocked -> ContextCompat.getColor(context, android.R.color.holo_red_dark)
                 ModelStatusKind.Unsupported -> ContextCompat.getColor(context, android.R.color.holo_orange_dark)
                 ModelStatusKind.NotInstalled,
                 ModelStatusKind.Corrupted,

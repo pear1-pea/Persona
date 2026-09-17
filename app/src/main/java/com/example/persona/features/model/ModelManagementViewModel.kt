@@ -1,10 +1,13 @@
 package com.example.persona.features.model
 
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.persona.core.ai.DeviceCapability
 import com.example.persona.core.ai.InstalledModel
 import com.example.persona.core.ai.LocalModelManager
+import com.example.persona.core.ai.ModelAdmission
+import com.example.persona.core.ai.ModelPackageInstallResult
 import com.example.persona.core.ai.ModelScanReport
 import com.example.persona.core.ai.ModelScanResult
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -19,6 +22,8 @@ import javax.inject.Inject
 
 enum class ModelStatusKind {
     Ready,
+    Risky,
+    Blocked,
     Current,
     NotInstalled,
     Corrupted,
@@ -39,7 +44,9 @@ data class ModelUiItem(
     val statusKind: ModelStatusKind,
     val reason: String?,
     val riskText: String?,
+    val admissionReasons: List<String>,
     val isReady: Boolean,
+    val isSelectable: Boolean,
     val isCurrent: Boolean,
     val minRamGb: Int,
     val fileSize: String,
@@ -81,7 +88,7 @@ class ModelManagementViewModel @Inject constructor(
     }
 
     fun selectModel(item: ModelUiItem) {
-        if (!item.isReady) {
+        if (!item.isSelectable) {
             _state.value = _state.value.copy(message = "该模型还不可用：" + (item.reason ?: item.statusLabel))
             return
         }
@@ -129,6 +136,16 @@ class ModelManagementViewModel @Inject constructor(
                     "删除失败：目录不存在或不在 App models 目录下"
                 }
             )
+        }
+    }
+
+    fun installModel(uri: Uri) {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(isLoading = true, message = "正在导入模型并校验文件...")
+            when (val result = localModelManager.installModelFromTree(uri)) {
+                is ModelPackageInstallResult.Success -> loadModels("已安装模型：${result.model.name}")
+                is ModelPackageInstallResult.Failure -> loadModels("模型安装失败：${result.reason}")
+            }
         }
     }
 
@@ -190,8 +207,14 @@ class ModelManagementViewModel @Inject constructor(
         val scanResult = result
         val readyModel = (scanResult as? ModelScanResult.Ready)?.model
         val isCurrent = readyModel != null && currentModel?.modelDir == readyModel.modelDir
+        val admission = (scanResult as? ModelScanResult.Ready)?.admission
         val statusKind = when (scanResult) {
-            is ModelScanResult.Ready -> if (isCurrent) ModelStatusKind.Current else ModelStatusKind.Ready
+            is ModelScanResult.Ready -> when {
+                isCurrent -> ModelStatusKind.Current
+                admission?.status == ModelAdmission.BLOCKED -> ModelStatusKind.Blocked
+                admission?.status == ModelAdmission.RISKY -> ModelStatusKind.Risky
+                else -> ModelStatusKind.Ready
+            }
             ModelScanResult.NotInstalled -> ModelStatusKind.NotInstalled
             is ModelScanResult.Corrupted -> ModelStatusKind.Corrupted
             is ModelScanResult.Unsupported -> ModelStatusKind.Unsupported
@@ -202,7 +225,10 @@ class ModelManagementViewModel @Inject constructor(
             is ModelScanResult.Unsupported -> scanResult.reason
             is ModelScanResult.Failed -> scanResult.reason
             ModelScanResult.NotInstalled -> "缺少 manifest.json"
-            is ModelScanResult.Ready -> null
+            is ModelScanResult.Ready -> admission
+                ?.takeIf { it.status == ModelAdmission.BLOCKED }
+                ?.reasons
+                ?.joinToString("；")
         }
         val name = readyModel?.name ?: directoryName
         val version = readyModel?.version ?: "-"
@@ -211,7 +237,11 @@ class ModelManagementViewModel @Inject constructor(
         val promptFormat = readyModel?.promptFormat ?: "-"
         val contextWindow = readyModel?.contextWindow?.toString() ?: "-"
         val minRamGb = readyModel?.minRamGb ?: 0
-        val riskText = readyModel?.memoryRiskText(capability)
+        val admissionReasons = admission?.reasons.orEmpty()
+        val riskText = when {
+            admission?.status == ModelAdmission.RISKY -> admissionReasons.joinToString("；")
+            else -> readyModel?.memoryRiskText(capability)
+        }
         val manifestText = manifestRaw?.trim()?.takeIf(String::isNotEmpty) ?: "未读取到 manifest.json"
         val item = ModelUiItem(
             directoryName = directoryName,
@@ -226,7 +256,9 @@ class ModelManagementViewModel @Inject constructor(
             statusKind = statusKind,
             reason = reason,
             riskText = riskText,
+            admissionReasons = admissionReasons,
             isReady = readyModel != null,
+            isSelectable = admission?.isSelectable == true,
             isCurrent = isCurrent,
             minRamGb = minRamGb,
             fileSize = totalSizeBytes.toReadableSize(),
@@ -266,6 +298,8 @@ class ModelManagementViewModel @Inject constructor(
     private fun ModelStatusKind.toLabel(): String {
         return when (this) {
             ModelStatusKind.Ready -> "Ready"
+            ModelStatusKind.Risky -> "Risky"
+            ModelStatusKind.Blocked -> "Blocked"
             ModelStatusKind.Current -> "当前模型"
             ModelStatusKind.NotInstalled -> "NotInstalled"
             ModelStatusKind.Corrupted -> "Corrupted"
@@ -312,7 +346,9 @@ class ModelManagementViewModel @Inject constructor(
             statusKind.name,
             reason.orEmpty(),
             riskText.orEmpty(),
+            admissionReasons.joinToString(","),
             isReady.toString(),
+            isSelectable.toString(),
             isCurrent.toString(),
             minRamGb.toString(),
             fileSize,

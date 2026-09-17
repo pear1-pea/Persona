@@ -2,6 +2,7 @@ package com.example.persona.features.model
 
 import android.os.Bundle
 import android.view.View
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -20,6 +21,11 @@ class ModelManagementActivity : AppCompatActivity() {
     private lateinit var binding: ActivityModelManagementBinding
     private val viewModel: ModelManagementViewModel by viewModels()
     private var lastFeedbackId = 0L
+    private val modelTreePicker = registerForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        uri?.let(viewModel::installModel)
+    }
     private val adapter = ModelListAdapter(
         onSelect = { item -> viewModel.selectModel(item) },
         onDelete = { item -> confirmDelete(item) },
@@ -36,6 +42,7 @@ class ModelManagementActivity : AppCompatActivity() {
 
         binding.btnBack.setOnClickListener { finish() }
         binding.btnRefresh.setOnClickListener { viewModel.refreshModels(showFeedback = true) }
+        binding.btnInstallModel.setOnClickListener { modelTreePicker.launch(null) }
         binding.btnUseCloud.setOnClickListener { viewModel.useCloud() }
 
         lifecycleScope.launch {
@@ -52,6 +59,7 @@ class ModelManagementActivity : AppCompatActivity() {
     private fun render(state: ModelManagementUiState) = with(binding) {
         progressBar.visibility = if (state.isLoading) View.VISIBLE else View.INVISIBLE
         btnRefresh.isEnabled = !state.isLoading
+        btnInstallModel.isEnabled = !state.isLoading
         btnRefresh.text = if (state.isLoading) "扫描中..." else "重新扫描"
         btnUseCloud.isEnabled = !state.isLoading && state.currentModelName != null
         btnUseCloud.text = if (state.currentModelName == null) "当前使用" else "改用云端"
@@ -75,7 +83,7 @@ class ModelManagementActivity : AppCompatActivity() {
         if (currentModelName != null) {
             return "当前模式：本地 · $currentModelName"
         }
-        return if (!state.isLoading && state.items.isNotEmpty() && state.items.none { item -> item.isReady }) {
+        return if (!state.isLoading && state.items.isNotEmpty() && state.items.none { item -> item.isSelectable }) {
             "当前模式：云端（没有可用的 Ready 模型）"
         } else {
             "当前模式：云端"
