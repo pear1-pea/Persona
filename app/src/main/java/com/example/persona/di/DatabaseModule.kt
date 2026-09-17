@@ -49,6 +49,7 @@ object DatabaseModule {
 
                 override fun onOpen(db: SupportSQLiteDatabase) {
                     super.onOpen(db)
+                    recoverInterruptedMessages(db)
                     refreshSeedPersonaBackstories(db)
                 }
             })
@@ -91,6 +92,20 @@ object DatabaseModule {
                 arrayOf(seed.backstory, "system", seed.name)
             )
         }
+    }
+
+    private fun recoverInterruptedMessages(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            """
+            UPDATE messages
+            SET status = 'STOPPED',
+                content = CASE
+                    WHEN content = '正在思考...' THEN '已停止生成'
+                    ELSE content
+                END
+            WHERE status = 'GENERATING'
+            """.trimIndent()
+        )
     }
 
     private data class SeedPersona(

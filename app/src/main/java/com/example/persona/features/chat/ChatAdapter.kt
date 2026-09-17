@@ -76,7 +76,8 @@ class ChatAdapter(
             },
             areContentsSame = { oldItem, newItem ->
                 oldItem.content == newItem.content &&
-                        oldItem.isFromUser == newItem.isFromUser
+                        oldItem.isFromUser == newItem.isFromUser &&
+                        oldItem.status == newItem.status
             },
             payloadProvider = { oldItem, newItem ->
                 if (oldItem.content != newItem.content) {

@@ -45,10 +45,8 @@ class RoomChatRepository @Inject constructor(
     }
 
     override suspend fun updateMessageContent(id: String, content: String, status: MessageStatus) {
-        val entity = messageDao.getMessageById(id)
-        if (entity != null) {
-            val updated = entity.copy(content = content, status = status.name)
-            messageDao.updateMessage(updated)
+        check(messageDao.updateMessageContent(id, content, status.name) == 1) {
+            "Message not found: $id"
         }
     }
 

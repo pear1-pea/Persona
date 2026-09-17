@@ -5,7 +5,6 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
-import androidx.room.Update
 import com.example.persona.data.local.entity.MessageEntity
 
 @Dao
@@ -20,11 +19,8 @@ interface MessageDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertMessage(message: MessageEntity)
 
-    @Update
-    suspend fun updateMessage(message: MessageEntity)
-
-    @Query("SELECT * FROM messages WHERE id = :id")
-    suspend fun getMessageById(id: String): MessageEntity?
+    @Query("UPDATE messages SET content = :content, status = :status WHERE id = :id")
+    suspend fun updateMessageContent(id: String, content: String, status: String): Int
 
     @Query("DELETE FROM messages WHERE personaId = :personaId")
     suspend fun deleteMessagesByPersonaId(personaId: String)

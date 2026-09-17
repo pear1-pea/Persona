@@ -7,26 +7,18 @@ import com.example.persona.domain.model.MessageStatus
 import com.example.persona.domain.model.Persona
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
-import org.junit.Before
 import org.junit.Test
 import org.mockito.kotlin.any
 import org.mockito.kotlin.mock
-import org.mockito.kotlin.never
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
 
 class RoomChatRepositoryTest {
 
     private val messageDao: MessageDao = mock()
-    private lateinit var repo: RoomChatRepository
+    private val repo = RoomChatRepository(messageDao)
 
     private val samplePersona = Persona("p1", "Test", "", "", listOf("A"), "Backstory", "me")
-    private val messageEntity = MessageEntity("m1", "p1", "Hello", true, 1000L)
-
-    @Before
-    fun setUp() {
-        repo = RoomChatRepository(messageDao)
-    }
 
     @Test
     fun `saveMessage inserts only message`() = runTest {
@@ -39,24 +31,25 @@ class RoomChatRepositoryTest {
 
     @Test
     fun `updateMessageContent updates existing message`() = runTest {
-        whenever(messageDao.getMessageById("m1")).thenReturn(messageEntity)
+        whenever(messageDao.updateMessageContent("m1", "Updated content", "FAILED"))
+            .thenReturn(1)
 
         repo.updateMessageContent("m1", "Updated content", MessageStatus.FAILED)
 
-        verify(messageDao).getMessageById("m1")
-        verify(messageDao).updateMessage(
-            messageEntity.copy(content = "Updated content", status = "FAILED")
-        )
+        verify(messageDao).updateMessageContent("m1", "Updated content", "FAILED")
     }
 
     @Test
-    fun `updateMessageContent skips update when message not found`() = runTest {
-        whenever(messageDao.getMessageById("m1")).thenReturn(null)
+    fun `updateMessageContent fails when message not found`() = runTest {
+        whenever(messageDao.updateMessageContent("m1", "Updated content", "NORMAL"))
+            .thenReturn(0)
 
-        repo.updateMessageContent("m1", "Updated content")
+        val error = runCatching {
+            repo.updateMessageContent("m1", "Updated content")
+        }.exceptionOrNull()
 
-        verify(messageDao).getMessageById("m1")
-        verify(messageDao, never()).updateMessage(any<MessageEntity>())
+        assertEquals("Message not found: m1", error?.message)
+        verify(messageDao).updateMessageContent("m1", "Updated content", "NORMAL")
     }
 
     @Test
