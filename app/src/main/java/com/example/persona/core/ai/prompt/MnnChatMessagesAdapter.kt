@@ -14,13 +14,18 @@ object MnnChatMessagesAdapter : PromptAdapter {
         model: InstalledModel,
         prompt: String,
         history: List<ChatMessage>,
-        params: GenerationParams
+        params: GenerationParams,
+        tokenizer: Tokenizer
     ): NativePromptPayload {
-        val messages = PromptHistoryTrimmer.trimForApproximateContext(
+        val messages = ContextPlanner.plan(
             model = model,
             history = history,
             prompt = prompt,
-            params = params
+            params = params,
+            tokenizer = tokenizer,
+            renderForCount = { plannedMessages ->
+                ContextPlanner.renderForPlanning(plannedMessages)
+            }
         ).map { message ->
             NativeMessage(
                 role = normalizeRole(message.role),

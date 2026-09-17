@@ -9,36 +9,17 @@ internal object PromptHistoryTrimmer {
         model: InstalledModel,
         history: List<ChatMessage>,
         prompt: String,
-        params: GenerationParams
+        params: GenerationParams,
+        tokenizer: Tokenizer = ConservativeTokenizer
     ): List<ChatMessage> {
-        val systemMessage = history.firstOrNull { normalizeRole(it.role) == ROLE_SYSTEM }
-        val conversation = history
-            .filterNot { it === systemMessage }
-            .filter { it.content.isNotBlank() } +
-            ChatMessage(role = ROLE_USER, content = prompt)
-
-        val maxPromptChars = maxOf(
-            MIN_PROMPT_CHARS,
-            (model.contextWindow - params.maxTokens).coerceAtLeast(512) * APPROX_CHARS_PER_TOKEN
+        return ContextPlanner.plan(
+            model = model,
+            history = history,
+            prompt = prompt,
+            params = params,
+            tokenizer = tokenizer
         )
-        val selected = ArrayDeque<ChatMessage>()
-        var usedChars = systemMessage?.content?.length ?: 0
-
-        conversation.asReversed().forEach { message ->
-            val messageSize = message.content.length + MESSAGE_OVERHEAD_CHARS
-            if (selected.isNotEmpty() && usedChars + messageSize > maxPromptChars) {
-                return@forEach
-            }
-            selected.addFirst(message)
-            usedChars += messageSize
-        }
-
-        return listOfNotNull(systemMessage?.takeIf { it.content.isNotBlank() }) + selected
     }
-
-    private const val APPROX_CHARS_PER_TOKEN = 4
-    private const val MESSAGE_OVERHEAD_CHARS = 32
-    private const val MIN_PROMPT_CHARS = 1000
 }
 
 internal const val ROLE_SYSTEM = "system"

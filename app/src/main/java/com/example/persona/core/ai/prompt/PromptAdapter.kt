@@ -11,6 +11,7 @@ interface PromptAdapter {
         model: InstalledModel,
         prompt: String,
         history: List<ChatMessage>,
-        params: GenerationParams
+        params: GenerationParams,
+        tokenizer: Tokenizer = ConservativeTokenizer
     ): NativePromptPayload
 }

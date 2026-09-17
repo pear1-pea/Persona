@@ -16,24 +16,21 @@ object QwenChatMlTextAdapter : PromptAdapter {
         model: InstalledModel,
         prompt: String,
         history: List<ChatMessage>,
-        params: GenerationParams
+        params: GenerationParams,
+        tokenizer: Tokenizer
     ): NativePromptPayload {
-        val messages = PromptHistoryTrimmer.trimForApproximateContext(
+        val messages = ContextPlanner.plan(
             model = model,
             history = history,
             prompt = prompt,
-            params = params
+            params = params,
+            tokenizer = tokenizer,
+            renderForCount = ::render
         )
-        val text = buildString {
-            messages.forEach { message ->
-                append("<|im_start|>")
-                append(normalizeRole(message.role))
-                append('\n')
-                append(message.content.trim())
-                append("<|im_end|>\n")
-            }
-            append("<|im_start|>assistant\n")
-        }
-        return NativePromptPayload.RawText(text = text)
+        return NativePromptPayload.RawText(text = render(messages))
+    }
+
+    private fun render(messages: List<ChatMessage>): String {
+        return ContextPlanner.renderForPlanning(messages)
     }
 }

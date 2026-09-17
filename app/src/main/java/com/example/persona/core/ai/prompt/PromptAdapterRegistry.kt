@@ -17,10 +17,11 @@ class PromptAdapterRegistry @Inject constructor() {
         model: InstalledModel,
         prompt: String,
         history: List<ChatMessage>,
-        params: GenerationParams
+        params: GenerationParams,
+        tokenizer: Tokenizer = ConservativeTokenizer
     ): NativePromptPayload {
         val adapter = adapters.firstOrNull { it.canHandle(model) }
             ?: error("No prompt adapter found for family=${model.family}, promptFormat=${model.promptFormat}")
-        return adapter.build(model, prompt, history, params)
+        return adapter.build(model, prompt, history, params, tokenizer)
     }
 }
