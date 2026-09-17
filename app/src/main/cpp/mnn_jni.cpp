@@ -562,6 +562,35 @@ Java_com_example_persona_core_ai_mnn_NativeMnnSession_nativeCreate(
     return reinterpret_cast<jlong>(session);
 }
 
+extern "C" JNIEXPORT jint JNICALL
+Java_com_example_persona_core_ai_mnn_NativeMnnSession_nativeCountTokens(
+    JNIEnv* env,
+    jobject,
+    jlong handle,
+    jstring text
+) {
+    auto* session = reinterpret_cast<MnnSession*>(handle);
+    if (session == nullptr || session->llm == nullptr) return -1;
+
+    const auto value = toString(env, text);
+    std::lock_guard<std::mutex> lock(session->mutex);
+    const auto inputIds = session->llm->tokenizer_encode(value);
+    return static_cast<jint>(inputIds.size());
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_example_persona_core_ai_mnn_NativeMnnSession_nativeReset(
+    JNIEnv*,
+    jobject,
+    jlong handle
+) {
+    auto* session = reinterpret_cast<MnnSession*>(handle);
+    if (session == nullptr || session->llm == nullptr) return;
+
+    std::lock_guard<std::mutex> lock(session->mutex);
+    session->llm->reset();
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_example_persona_core_ai_mnn_NativeMnnSession_nativeGenerateRawText(
     JNIEnv* env,

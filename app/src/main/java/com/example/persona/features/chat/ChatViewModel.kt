@@ -5,10 +5,12 @@ import androidx.lifecycle.viewModelScope
 import androidx.paging.PagingData
 import androidx.paging.cachedIn
 import com.example.persona.core.ai.ChatMessage
+import com.example.persona.core.ai.Backend
 import com.example.persona.core.ai.EngineState
+import com.example.persona.core.ai.GenerationError
+import com.example.persona.core.ai.GenerationEvent
 import com.example.persona.core.ai.GenerationSession
 import com.example.persona.core.base.BaseViewModel
-import com.example.persona.data.remote.CloudGenerationException
 import com.example.persona.data.repository.HybridAiRepository
 import com.example.persona.domain.model.Message
 import com.example.persona.domain.model.MessageStatus
@@ -23,7 +25,6 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flatMapLatest
@@ -148,108 +149,189 @@ class ChatViewModel @Inject constructor(
         )
         chatRepository.saveMessage(userMessage, persona)
 
-        val aiMessageId = UUID.randomUUID().toString()
-        chatRepository.saveMessage(
-            Message(
-                id = aiMessageId,
-                personaId = persona.id,
-                content = PLACEHOLDER_THINKING,
-                isFromUser = false,
-                timestamp = System.currentTimeMillis() + 1,
-                status = MessageStatus.GENERATING
-            ),
-            persona
-        )
-
-        val mode = hybridRepository.selectModeForGeneration(forceCloud)
-        _isCloudMode.value = mode == HybridAiRepository.Mode.CLOUD
         val systemPrompt = buildSystemPrompt(persona)
-
-        val content = StringBuilder()
+        var currentAiMessageId: String? = null
+        var currentContent = StringBuilder()
+        var currentBackend = Backend.CLOUD
         var persistedContent = ""
         var persistedStatus = MessageStatus.GENERATING
         var lastPersistMs = 0L
-        var streamFailed = false
         var stoppedForRepetition = false
+        var mode = HybridAiRepository.Mode.CLOUD
+        var terminalStatus: MessageStatus? = null
 
         suspend fun persist(
+            messageId: String,
             text: String,
             status: MessageStatus = MessageStatus.NORMAL,
             force: Boolean = false
         ) {
             if (!force && text == persistedContent && status == persistedStatus) return
-            chatRepository.updateMessageContent(aiMessageId, text, status)
+            chatRepository.updateMessageContent(messageId, text, status)
             // Treat the in-memory value as committed only after Room succeeds.
             persistedContent = text
             persistedStatus = status
             lastPersistMs = System.currentTimeMillis()
         }
 
+        suspend fun createAiMessage(backend: Backend): String {
+            val messageId = UUID.randomUUID().toString()
+            chatRepository.saveMessage(
+                Message(
+                    id = messageId,
+                    personaId = persona.id,
+                    content = PLACEHOLDER_THINKING,
+                    isFromUser = false,
+                    timestamp = System.currentTimeMillis() + 1,
+                    status = MessageStatus.GENERATING
+                ),
+                persona
+            )
+            currentAiMessageId = messageId
+            currentBackend = backend
+            currentContent = StringBuilder()
+            persistedContent = PLACEHOLDER_THINKING
+            persistedStatus = MessageStatus.GENERATING
+            lastPersistMs = 0L
+            return messageId
+        }
+
         try {
+            mode = hybridRepository.selectModeForGeneration(forceCloud)
+            _isCloudMode.value = mode == HybridAiRepository.Mode.CLOUD
+            createAiMessage(if (mode == HybridAiRepository.Mode.LOCAL) Backend.MNN else Backend.CLOUD)
+
             hybridRepository.streamResponse(mode, session, systemPrompt, userText, localHistory)
-                .catch { error ->
-                    if (error is CancellationException) throw error
-                    streamFailed = true
-                    Log.e(TAG, "Stream error", error)
-                    val reason = error.describeForUser(mode)
-                    val failureNotice = "$GENERATION_ERROR_MARKER $reason"
-                    val currentContent = content.toString()
-                    val failureContent = if (currentContent.isBlank()) {
-                        failureNotice
-                    } else {
-                        "$currentContent\n\n$failureNotice"
-                    }
-                    content.setLength(0)
-                    content.append(failureContent)
-                    persist(failureContent, status = MessageStatus.FAILED, force = true)
-                    emitError("生成失败: $reason")
-                }
-                .collect { token ->
+                .collect { event ->
                     if (activeGenerationSession?.id != session.id) return@collect
                     if (stoppedForRepetition) return@collect
-                    content.append(token)
-                    val currentContent = content.toString()
-                    if (mode == HybridAiRepository.Mode.LOCAL && currentContent.hasRepetitionLoop()) {
-                        stoppedForRepetition = true
-                        persist(
-                            currentContent.trim().appendStopNotice(),
-                            status = MessageStatus.STOPPED
-                        )
-                        hybridRepository.stopGeneration(session)
-                        return@collect
-                    }
-                    if (System.currentTimeMillis() - lastPersistMs >= PERSIST_INTERVAL_MS) {
-                        persist(currentContent, status = MessageStatus.GENERATING)
+                    val messageId = currentAiMessageId ?: return@collect
+                    when (event) {
+                        is GenerationEvent.Delta -> {
+                            currentContent.append(event.text)
+                            val text = currentContent.toString()
+                            if (currentBackend == Backend.MNN && text.hasRepetitionLoop()) {
+                                stoppedForRepetition = true
+                                terminalStatus = MessageStatus.STOPPED
+                                persist(
+                                    messageId = messageId,
+                                    text = text.trim().appendStopNotice(),
+                                    status = MessageStatus.STOPPED,
+                                    force = true
+                                )
+                                hybridRepository.stopGeneration(session)
+                                return@collect
+                            }
+                            if (System.currentTimeMillis() - lastPersistMs >= PERSIST_INTERVAL_MS) {
+                                persist(messageId, text, status = MessageStatus.GENERATING)
+                            }
+                        }
+
+                        is GenerationEvent.Completed -> {
+                            if (terminalStatus == null) {
+                                val text = currentContent.toString()
+                                if (text.isBlank()) {
+                                    terminalStatus = MessageStatus.FAILED
+                                    persist(
+                                        messageId = messageId,
+                                        text = EMPTY_RESPONSE_MESSAGE,
+                                        status = MessageStatus.FAILED,
+                                        force = true
+                                    )
+                                } else {
+                                    terminalStatus = MessageStatus.NORMAL
+                                    persist(messageId, text, status = MessageStatus.NORMAL, force = true)
+                                }
+                            }
+                        }
+
+                        is GenerationEvent.Stopped -> {
+                            terminalStatus = MessageStatus.STOPPED
+                            val text = event.partialText.ifBlank {
+                                currentContent.toString().ifBlank { STOPPED_RESPONSE_MESSAGE }
+                            }
+                            persist(
+                                messageId = messageId,
+                                text = text,
+                                status = MessageStatus.STOPPED,
+                                force = true
+                            )
+                        }
+
+                        is GenerationEvent.Failed -> {
+                            val failedText = failureDisplayText(event.error, event.partialText)
+                            persist(
+                                messageId = messageId,
+                                text = failedText,
+                                status = MessageStatus.FAILED,
+                                force = true
+                            )
+                            terminalStatus = MessageStatus.FAILED
+                            if (event.backend == Backend.MNN && mode == HybridAiRepository.Mode.LOCAL) {
+                                emitError("本地 AI 生成失败，已切换到云端。")
+                                _isCloudMode.value = true
+                                terminalStatus = null
+                                createAiMessage(Backend.CLOUD)
+                            } else {
+                                emitError("生成失败: ${event.error.message}")
+                            }
+                        }
                     }
                 }
 
-            if (!streamFailed && !stoppedForRepetition) {
-                if (content.isEmpty()) {
-                    if (activeGenerationSession?.id == session.id) {
-                        persist(EMPTY_RESPONSE_MESSAGE, status = MessageStatus.FAILED)
+            currentAiMessageId?.let { messageId ->
+                if (!stoppedForRepetition && terminalStatus == null) {
+                    if (currentContent.isEmpty()) {
+                        if (activeGenerationSession?.id == session.id) {
+                            persist(
+                                messageId = messageId,
+                                text = EMPTY_RESPONSE_MESSAGE,
+                                status = MessageStatus.FAILED,
+                                force = true
+                            )
+                        }
+                    } else {
+                        persist(messageId, currentContent.toString(), status = MessageStatus.NORMAL, force = true)
                     }
-                } else {
-                    persist(content.toString(), status = MessageStatus.NORMAL)
                 }
             }
         } catch (error: CancellationException) {
             withContext(NonCancellable) {
                 runCatching {
                     val stoppedContent = when {
-                        stoppedForRepetition -> content.toString().trim().appendStopNotice()
-                        content.isEmpty() -> STOPPED_RESPONSE_MESSAGE
-                        else -> content.toString()
+                        stoppedForRepetition -> currentContent.toString().trim().appendStopNotice()
+                        currentContent.isEmpty() -> STOPPED_RESPONSE_MESSAGE
+                        else -> currentContent.toString()
                     }
-                    persist(
-                        text = stoppedContent,
-                        status = MessageStatus.STOPPED,
-                        force = true
-                    )
+                    currentAiMessageId?.let { messageId ->
+                        persist(
+                            messageId = messageId,
+                            text = stoppedContent,
+                            status = MessageStatus.STOPPED,
+                            force = true
+                        )
+                    }
                 }.onFailure { persistError ->
                     Log.e(TAG, "Failed to persist stopped generation", persistError)
                 }
             }
             throw error
+        } catch (error: Throwable) {
+            hybridRepository.stopGeneration(session)
+            Log.e(TAG, "Generation or persistence failed", error)
+            val reason = error.describeForUser(currentBackend)
+            val failureContent = currentContent.toString()
+                .failureDisplayText(reason)
+            withContext(NonCancellable) {
+                runCatching {
+                    currentAiMessageId?.let { messageId ->
+                        persist(messageId, failureContent, status = MessageStatus.FAILED, force = true)
+                    }
+                }.onFailure { persistError ->
+                    Log.e(TAG, "Failed to persist generation failure", persistError)
+                }
+            }
+            emitError("生成失败: $reason")
         }
 
     }
@@ -301,8 +383,6 @@ class ChatViewModel @Inject constructor(
                 message.status == MessageStatus.NORMAL &&
                 content.length <= MAX_HISTORY_MESSAGE_CHARS &&
                 content !in HISTORY_EXCLUDED_MESSAGES &&
-                !content.contains(GENERATION_ERROR_MARKER) &&
-                !content.contains(LOCAL_FALLBACK_NOTICE_MARKER) &&
                 !content.hasRepetitionLoop()
         }
     }
@@ -344,13 +424,22 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    private fun Throwable.describeForUser(mode: HybridAiRepository.Mode): String {
-        if (this is CloudGenerationException) {
-            return message.orEmpty().ifBlank { CLOUD_GENERIC_ERROR }
-        }
-        val source = if (mode == HybridAiRepository.Mode.LOCAL) "本地 AI" else "云端 AI"
+    private fun Throwable.describeForUser(backend: Backend): String {
+        val source = if (backend == Backend.MNN) "本地 AI" else "云端 AI"
         val detail = message?.takeIf(String::isNotBlank) ?: return "$source 生成失败，请稍后再试。"
         return "$source 错误: $detail"
+    }
+
+    private fun failureDisplayText(error: GenerationError, partialText: String): String {
+        return partialText.failureDisplayText(error.message)
+    }
+
+    private fun String.failureDisplayText(reason: String): String {
+        return if (isBlank()) {
+            reason
+        } else {
+            this + "\n\n" + reason
+        }
     }
 
     private fun parseModeOverride(text: String): Pair<Boolean, String> {
@@ -372,8 +461,6 @@ class ChatViewModel @Inject constructor(
         const val EMPTY_RESPONSE_MESSAGE = "未收到回复，请重试。"
         const val REPETITION_STOPPED_MESSAGE = "已停止重复输出。"
         const val CLOUD_GENERIC_ERROR = "云端 AI 生成失败，请稍后再试。"
-        const val GENERATION_ERROR_MARKER = "[生成失败]"
-        const val LOCAL_FALLBACK_NOTICE_MARKER = "本地 AI 生成中断"
         const val CLOUD_PREFIX = "@cloud"
         const val MAX_HISTORY_MESSAGE_CHARS = 1500
         const val MIN_REPEAT_SCAN_CHARS = 36

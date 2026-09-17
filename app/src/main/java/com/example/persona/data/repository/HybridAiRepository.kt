@@ -2,7 +2,11 @@ package com.example.persona.data.repository
 
 import android.util.Log
 import com.example.persona.core.ai.ChatMessage
+import com.example.persona.core.ai.Backend
 import com.example.persona.core.ai.EngineState
+import com.example.persona.core.ai.GenerationError
+import com.example.persona.core.ai.GenerationErrorType
+import com.example.persona.core.ai.GenerationEvent
 import com.example.persona.core.ai.GenerationSession
 import com.example.persona.core.ai.InstalledModel
 import com.example.persona.core.ai.LocalAiEngine
@@ -17,6 +21,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -34,6 +40,7 @@ class HybridAiRepository @Inject constructor(
 
     private val routeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val routeLock = Any()
+    private val localInitializationMutex = Mutex()
 
     @Volatile
     private var selectedModelDir: String? = localModelManager.currentModel.value?.modelDir
@@ -57,12 +64,14 @@ class HybridAiRepository @Inject constructor(
     }
 
     suspend fun initializeLocalModel(): Boolean {
-        localModelManager.refreshInstalledModels()
-        val model = localModelManager.currentModel.value ?: run {
-            releaseLocalRoute()
-            return false
+        return localInitializationMutex.withLock {
+            localModelManager.refreshInstalledModels()
+            val model = localModelManager.currentModel.value ?: run {
+                releaseLocalRoute()
+                return@withLock false
+            }
+            initializeSelectedModel(model)
         }
-        return initializeSelectedModel(model)
     }
 
     fun selectMode(forceCloud: Boolean, localEnabled: Boolean = true): Mode {
@@ -106,7 +115,7 @@ class HybridAiRepository @Inject constructor(
         systemPrompt: String,
         userMessage: String,
         history: List<ChatMessage> = emptyList()
-    ): Flow<String> = when (mode) {
+    ): Flow<GenerationEvent> = when (mode) {
         Mode.CLOUD -> flow {
             _activeMode.value = Mode.CLOUD
             emitAll(cloudRepository.streamResponse(systemPrompt, userMessage, history))
@@ -116,24 +125,68 @@ class HybridAiRepository @Inject constructor(
             synchronized(routeLock) {
                 activeGenerationSession = session
             }
-            var emittedLocalToken = false
             try {
-                localAiEngine.streamResponse(
-                    session = session,
-                    prompt = userMessage,
-                    history = listOf(ChatMessage("system", systemPrompt)) + history
-                ).collect { token ->
-                    emittedLocalToken = true
-                    emit(token)
+                val localPartial = StringBuilder()
+                var localTerminal = false
+                val localFailure = try {
+                    var failure: GenerationEvent.Failed? = null
+                    localAiEngine.streamResponse(
+                        session = session,
+                        prompt = userMessage,
+                        history = listOf(ChatMessage("system", systemPrompt)) + history
+                    ).collect { event ->
+                        if (localTerminal) return@collect
+                        when (event) {
+                            is GenerationEvent.Delta -> localPartial.append(event.text)
+                            is GenerationEvent.Failed -> {
+                                failure = event
+                                localTerminal = true
+                            }
+                            is GenerationEvent.Completed,
+                            is GenerationEvent.Stopped -> localTerminal = true
+                        }
+                        if (event !is GenerationEvent.Failed) {
+                            emit(event)
+                        }
+                    }
+                    failure ?: if (!localTerminal) {
+                        GenerationEvent.Failed(
+                            backend = Backend.MNN,
+                            error = GenerationError(
+                                type = GenerationErrorType.MODEL_RUNTIME,
+                                message = "本地 AI 流提前结束"
+                            ),
+                            partialText = localPartial.toString()
+                        )
+                    } else {
+                        null
+                    }
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Throwable) {
+                    Log.e(TAG, "Local generation failed; falling back to cloud", error)
+                    GenerationEvent.Failed(
+                        backend = Backend.MNN,
+                        error = GenerationError(
+                            type = GenerationErrorType.MODEL_RUNTIME,
+                            message = error.message ?: "本地 AI 生成失败",
+                            cause = error
+                        ),
+                        partialText = localPartial.toString()
+                    )
                 }
-            } catch (error: Throwable) {
-                if (error is CancellationException) throw error
-                if (emittedLocalToken) {
-                    emit(LOCAL_FALLBACK_NOTICE)
+                if (localFailure != null) {
+                    Log.e(TAG, "Local generation failed; falling back to cloud")
+                    localModelManager.currentModel.value?.let { model ->
+                        localModelManager.recordLocalLoadFailure(
+                            model,
+                            localFailure.error.cause ?: IllegalStateException(localFailure.error.message)
+                        )
+                    }
+                    _activeMode.value = Mode.CLOUD
+                    emit(localFailure)
+                    emitAll(cloudRepository.streamResponse(systemPrompt, userMessage, history))
                 }
-                Log.e(TAG, "Local generation failed; falling back to cloud", error)
-                _activeMode.value = Mode.CLOUD
-                emitAll(cloudRepository.streamResponse(systemPrompt, userMessage, history))
             } finally {
                 synchronized(routeLock) {
                     if (activeGenerationSession?.id == session.id) {
@@ -145,48 +198,84 @@ class HybridAiRepository @Inject constructor(
     }
 
     private suspend fun ensureLocalReady(): Boolean {
-        var model = localModelManager.currentModel.value
-        if (model == null) {
-            localModelManager.refreshInstalledModels()
-            model = localModelManager.currentModel.value
-        }
+        return localInitializationMutex.withLock {
+            var model = localModelManager.currentModel.value
+            if (model == null) {
+                localModelManager.refreshInstalledModels()
+                model = localModelManager.currentModel.value
+            }
 
-        if (model == null) {
-            releaseLocalRoute()
-            return false
-        }
+            if (model == null) {
+                releaseLocalRoute()
+                return@withLock false
+            }
 
-        if (localAiEngine.state.value == EngineState.Ready && loadedModelDir == model.modelDir) {
-            _activeMode.value = Mode.LOCAL
-            return true
-        }
+            if (localAiEngine.state.value == EngineState.Ready && loadedModelDir == model.modelDir) {
+                _activeMode.value = Mode.LOCAL
+                return@withLock true
+            }
 
-        if (loadedModelDir != null && loadedModelDir != model.modelDir) {
-            releaseLocalRoute()
-        }
+            if (loadedModelDir != null && loadedModelDir != model.modelDir) {
+                releaseLocalRoute()
+            }
 
-        return initializeSelectedModel(model)
+            initializeSelectedModel(model)
+        }
     }
 
     private suspend fun initializeSelectedModel(model: InstalledModel): Boolean {
+        if (localModelManager.recentFailureCount(model.id) > 0) {
+            loadedModelDir = null
+            _activeMode.value = Mode.CLOUD
+            return false
+        }
         selectedModelDir = model.modelDir
-        val initialized = runCatching {
+        val initialized = try {
             localAiEngine.initialize(model)
-        }.getOrElse { error ->
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
             Log.e(TAG, "Local model initialization failed: ${model.id}", error)
+            localModelManager.recordLocalLoadFailure(model, error)
             loadedModelDir = null
             _activeMode.value = Mode.CLOUD
             return false
         }
 
-        if (initialized) {
+        if (!initialized) {
+            val reason = (localAiEngine.state.value as? EngineState.Error)?.reason
+            localModelManager.recordLocalLoadFailure(
+                model,
+                reason?.let { IllegalStateException(it) }
+            )
+            loadedModelDir = null
+            _activeMode.value = Mode.CLOUD
+            return false
+        }
+
+        val smokePassed = try {
+            localAiEngine.smokeTest(model)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            Log.e(TAG, "Local model smoke test failed: ${model.id}", error)
+            false
+        }
+
+        if (smokePassed) {
+            localModelManager.recordLocalLoadSuccess(model)
             loadedModelDir = model.modelDir
             _activeMode.value = Mode.LOCAL
         } else {
+            localAiEngine.release()
+            localModelManager.recordLocalLoadFailure(
+                model,
+                IllegalStateException("本地模型 smoke test 失败")
+            )
             loadedModelDir = null
             _activeMode.value = Mode.CLOUD
         }
-        return initialized
+        return smokePassed
     }
 
     private fun handleCurrentModelChanged(model: InstalledModel?) {
@@ -221,6 +310,5 @@ class HybridAiRepository @Inject constructor(
 
     private companion object {
         const val TAG = "HybridAiRepository"
-        const val LOCAL_FALLBACK_NOTICE = "\n\n[本地 AI 生成中断，已切换到云端继续。]\n"
     }
 }

@@ -8,12 +8,14 @@ interface LocalAiEngine {
 
     suspend fun initialize(model: InstalledModel): Boolean
 
+    suspend fun smokeTest(model: InstalledModel): Boolean
+
     fun streamResponse(
         session: GenerationSession,
         prompt: String,
         history: List<ChatMessage> = emptyList(),
         params: GenerationParams = GenerationParams()
-    ): Flow<String>
+    ): Flow<GenerationEvent>
 
     fun stopGeneration(session: GenerationSession)
 
