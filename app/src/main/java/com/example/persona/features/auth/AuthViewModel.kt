@@ -1,99 +1,67 @@
-
 package com.example.persona.features.auth
 
-import androidx.lifecycle.viewModelScope
 import com.example.persona.core.auth.AuthManager
 import com.example.persona.core.base.BaseViewModel
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.asStateFlow
+import retrofit2.HttpException
 import javax.inject.Inject
 
 @HiltViewModel
 class AuthViewModel @Inject constructor(
     private val authManager: AuthManager
 ) : BaseViewModel() {
-
     val isLoggedIn: StateFlow<Boolean> = authManager.isLoggedIn
 
     private val _signInSuccess = MutableSharedFlow<Unit>()
     val signInSuccess: SharedFlow<Unit> = _signInSuccess
 
-    private val _phoneAuthEvents = MutableSharedFlow<PhoneAuthEvent>()
-    val phoneAuthEvents: SharedFlow<PhoneAuthEvent> = _phoneAuthEvents
-
-    private var currentPhoneNumber: String? = null
-    private var lastVerificationRequestTime = 0L
-    private val verificationCooldown = 60_000L
-
-    fun getCurrentPhoneNumber(): String? = currentPhoneNumber
-
-    fun startPhoneNumberVerification(phoneNumber: String) {
-        val now = System.currentTimeMillis()
-        if (now - lastVerificationRequestTime < verificationCooldown) {
-            viewModelScope.launch {
-                _phoneAuthEvents.emit(PhoneAuthEvent.VerificationFailed("Please wait a moment before requesting another code."))
-            }
-            return
-        }
-
-        lastVerificationRequestTime = now
-        currentPhoneNumber = phoneNumber
-
-        launchCatching(
-            block = {
-                authManager.sendPhoneVerificationCode(phoneNumber)
-                _phoneAuthEvents.emit(PhoneAuthEvent.CodeSent(phoneNumber))
-            },
-            onError = { error ->
-                viewModelScope.launch {
-                    _phoneAuthEvents.emit(
-                        PhoneAuthEvent.VerificationFailed(error.localizedMessage ?: "Failed to send verification code.")
-                    )
-                }
-            }
-        )
-    }
-
-    fun verifyPhoneNumberCode(phoneNumber: String, code: String) {
-        launchCatching(
-            block = {
-                authManager.signInWithPhoneCode(phoneNumber, code)
-                _signInSuccess.emit(Unit)
-            },
-            onError = { error ->
-                emitError("Phone verification login failed: ${error.localizedMessage ?: "Unknown error"}")
-            }
-        )
-    }
+    private val _isSubmitting = MutableStateFlow(false)
+    val isSubmitting: StateFlow<Boolean> = _isSubmitting.asStateFlow()
 
     fun signIn(email: String, password: String) {
+        if (_isSubmitting.value) return
+        _isSubmitting.value = true
         launchCatching(
             block = {
                 authManager.signIn(email, password)
                 _signInSuccess.emit(Unit)
             },
-            onError = { error ->
-                emitError("Login failed: ${error.localizedMessage ?: "Unknown error"}")
-            }
+            onError = { error -> emitError(error.messageForAuth("登录失败")) }
+        ).also {
+            it.invokeOnCompletion { _isSubmitting.value = false }
         )
     }
 
     fun signUp(email: String, password: String) {
+        if (_isSubmitting.value) return
+        _isSubmitting.value = true
         launchCatching(
             block = {
                 authManager.signUp(email, password)
                 _signInSuccess.emit(Unit)
             },
-            onError = { error ->
-                emitError("Registration failed: ${error.localizedMessage ?: "Unknown error"}")
-            }
+            onError = { error -> emitError(error.messageForAuth("注册失败")) }
+        ).also {
+            it.invokeOnCompletion { _isSubmitting.value = false }
         )
     }
 
-    fun logout() {
-        authManager.logout()
+    fun logout() = authManager.logout()
+
+    suspend fun validateSession() = authManager.validateSession()
+
+    private fun Throwable.messageForAuth(prefix: String): String {
+        return if (this is HttpException && code() == 409) {
+            "该邮箱已注册，请直接登录"
+        } else if (this is HttpException && code() == 401) {
+            "邮箱或密码错误"
+        } else {
+            "$prefix，请稍后重试"
+        }
     }
 }

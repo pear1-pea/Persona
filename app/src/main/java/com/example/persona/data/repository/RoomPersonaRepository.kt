@@ -21,10 +21,14 @@ class RoomPersonaRepository @Inject constructor(
         return dao.getAllPersonas().map { it.toDomain() }
     }
 
+    suspend fun getPublicSeedPersonas(): List<Persona> {
+        return dao.getPublicSeedPersonas().map { it.toDomain() }
+    }
+
     override suspend fun getMyPersonas(): List<Persona> {
         return dao.getPersonasByCreator(authManager.currentRepoId).map { it.toDomain() }    }
 
-    override suspend fun addPersona(name: String, traits: List<String>, backstory: String) {
+    override suspend fun addPersona(name: String, traits: List<String>, backstory: String, isPublic: Boolean) {
         val newId = UUID.randomUUID().toString()
         val currentUserId = authManager.currentRepoId
         val newPersona = Persona(
@@ -39,8 +43,37 @@ class RoomPersonaRepository @Inject constructor(
         dao.insertCompletePersona(newPersona.toEntity(), newPersona.toTraitEntities())
     }
 
+    override suspend fun updatePersona(
+        id: String,
+        name: String,
+        traits: List<String>,
+        backstory: String,
+        isPublic: Boolean
+    ) {
+        val existing = dao.getPersonaById(id, authManager.currentRepoId)?.toDomain() ?: return
+        val updated = existing.copy(
+            name = name,
+            traits = traits,
+            backstory = backstory,
+            isPublic = isPublic
+        )
+        dao.insertCompletePersona(updated.toEntity(), updated.toTraitEntities())
+    }
+
     override suspend fun getPersonaById(id: String): Persona? {
-        val entity = dao.getPersonaById(id)
+        val entity = dao.getPersonaById(id, authManager.currentRepoId)
         return entity?.toDomain()
+    }
+
+    suspend fun getPublicSeedPersonaById(id: String): Persona? {
+        return dao.getPublicSeedPersonaById(id)?.toDomain()
+    }
+
+    override suspend fun deletePersona(id: String) {
+        dao.deletePersona(id, authManager.currentRepoId)
+    }
+
+    suspend fun deletePersonasByCreator(creatorId: String) {
+        dao.deletePersonasByCreator(creatorId)
     }
 }

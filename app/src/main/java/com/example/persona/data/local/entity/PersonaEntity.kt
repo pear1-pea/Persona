@@ -11,5 +11,6 @@ data class PersonaEntity(
     val avatarUrl: String,
     val postImageUrl: String,
     val backstory: String,
-    val creatorId: String 
+    val creatorId: String,
+    val isPublic: Boolean = true
 )

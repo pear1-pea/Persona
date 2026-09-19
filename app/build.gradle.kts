@@ -1,12 +1,29 @@
 import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     id("kotlin-kapt")
     id("com.google.dagger.hilt.android")
-    id("com.google.gms.google-services")
-    id("com.google.firebase.crashlytics")
     id("androidx.navigation.safeargs.kotlin")
+}
+
+val localProperties = Properties()
+val localPropertiesFile = project.rootProject.file("local.properties")
+if (localPropertiesFile.exists()) {
+    localProperties.load(localPropertiesFile.inputStream())
+}
+
+fun localBuildConfigString(name: String, defaultValue: String = ""): String {
+    val rawValue = providers.gradleProperty(name).orNull
+        ?: System.getenv(name)
+        ?: localProperties.getProperty(name)
+        ?: defaultValue
+    val normalizedValue = rawValue.trim().removeSurrounding("\"")
+    val escapedValue = normalizedValue
+        .replace("\\", "\\\\")
+        .replace("\"", "\\\"")
+    return "\"$escapedValue\""
 }
 
 android {
@@ -34,27 +51,8 @@ android {
             }
         }
 
-        val properties = Properties()
-        val localPropertiesFile = project.rootProject.file("local.properties")
-        if (localPropertiesFile.exists()) {
-            properties.load(localPropertiesFile.inputStream())
-        }
-
-        fun localBuildConfigString(name: String, defaultValue: String = ""): String {
-            val rawValue = properties.getProperty(name)?.trim()?.removeSurrounding("\"") ?: defaultValue
-            val escapedValue = rawValue
-                .replace("\\", "\\\\")
-                .replace("\"", "\\\"")
-            return "\"$escapedValue\""
-        }
-
-        buildConfigField("String", "DEEPSEEK_API_KEY", localBuildConfigString("DEEPSEEK_API_KEY"))
+        buildConfigField("String", "PERSONA_BACKEND_BASE_URL", localBuildConfigString("PERSONA_BACKEND_BASE_URL"))
         buildConfigField("String", "DEEPSEEK_MODEL_ID", localBuildConfigString("DEEPSEEK_MODEL_ID", "deepseek-v4-flash"))
-        buildConfigField(
-            "String",
-            "AUTHING_APP_ID",
-            localBuildConfigString("AUTHING_APP_ID", "6a7096f7a1934ab88b61704a")
-        )
 
     }
 
@@ -97,8 +95,6 @@ dependencies {
     implementation(libs.androidx.activity)
     implementation(libs.androidx.constraintlayout)
 
-    implementation("cn.authing:guard:+")
-
     val navVersion = "2.8.0"
     implementation("androidx.navigation:navigation-fragment-ktx:$navVersion")
     implementation("androidx.navigation:navigation-ui-ktx:$navVersion")
@@ -133,13 +129,6 @@ dependencies {
     val pagingVersion = "3.3.0"
     implementation("androidx.paging:paging-runtime:$pagingVersion")
     implementation("androidx.room:room-paging:$roomVersion")
-
-    implementation(platform("com.google.firebase:firebase-bom:33.0.0"))
-    implementation("com.google.firebase:firebase-firestore-ktx")
-    implementation("com.google.firebase:firebase-analytics-ktx")
-    implementation("com.google.firebase:firebase-crashlytics-ktx")
-
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.8.1")
 
     testImplementation(libs.junit)
     testImplementation("org.mockito.kotlin:mockito-kotlin:5.4.0")

@@ -6,6 +6,8 @@ interface PersonaRepository {
     suspend fun getPersonas(): List<Persona>
     suspend fun getPersonaById(id: String): Persona?
     suspend fun getMyPersonas(): List<Persona>
-    suspend fun addPersona(name: String, traits: List<String>, backstory: String)
+    suspend fun addPersona(name: String, traits: List<String>, backstory: String, isPublic: Boolean = true)
+    suspend fun updatePersona(id: String, name: String, traits: List<String>, backstory: String, isPublic: Boolean)
+    suspend fun deletePersona(id: String)
 
 }

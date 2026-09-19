@@ -5,6 +5,7 @@ import android.os.Bundle
 import android.view.View
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.app.AlertDialog
 import androidx.lifecycle.lifecycleScope
 import com.example.persona.R
 import com.example.persona.core.util.observeErrorEvents
@@ -22,6 +23,7 @@ class CreatePersonaActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityCreatePersonaBinding
     private val viewModel: CreatePersonaViewModel by viewModels()
+    private var editingPersonaId: String? = null
 
     @SuppressLint("SetTextI18n")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -29,7 +31,8 @@ class CreatePersonaActivity : AppCompatActivity() {
         binding = ActivityCreatePersonaBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        setupChips() 
+        setupChips()
+        restoreEditingPersona()
 
         binding.btnAiGenerate.setOnClickListener {
             val keywords = binding.etBackstory.text.toString() + " " + binding.etName.text.toString()
@@ -55,7 +58,23 @@ class CreatePersonaActivity : AppCompatActivity() {
                 return@setOnClickListener
             }
 
-            viewModel.createPersona(name, story, selectedTraits)
+            viewModel.savePersona(
+                id = editingPersonaId,
+                name = name,
+                story = story,
+                traits = selectedTraits,
+                isPublic = binding.switchPublic.isChecked
+            )
+        }
+
+        binding.btnDeletePersona.setOnClickListener {
+            val id = editingPersonaId ?: return@setOnClickListener
+            AlertDialog.Builder(this)
+                .setTitle("删除 Persona")
+                .setMessage("删除后无法恢复。")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("删除") { _, _ -> viewModel.deletePersona(id) }
+                .show()
         }
 
         // Listen for ViewModel events
@@ -125,10 +144,26 @@ class CreatePersonaActivity : AppCompatActivity() {
         }
     }
 
+    private fun restoreEditingPersona() {
+        editingPersonaId = intent.getStringExtra(EXTRA_PERSONA_ID)
+        if (editingPersonaId == null) return
+        val name = intent.getStringExtra(EXTRA_PERSONA_NAME).orEmpty()
+        val backstory = intent.getStringExtra(EXTRA_PERSONA_BACKSTORY).orEmpty()
+        val traits = intent.getStringArrayListExtra(EXTRA_PERSONA_TRAITS).orEmpty()
+        binding.etName.setText(name)
+        binding.etBackstory.setText(backstory)
+        binding.switchPublic.isChecked = intent.getBooleanExtra(EXTRA_PERSONA_PUBLIC, true)
+        binding.btnCreate.text = "保存修改"
+        binding.btnDeletePersona.visibility = View.VISIBLE
+        binding.chipGroupTraits.removeAllViews()
+        traits.forEach { binding.chipGroupTraits.addView(createChip(it, isSelected = true)) }
+    }
+
     private fun setUiEnabled(enabled: Boolean) {
         binding.etName.isEnabled = enabled
         binding.etBackstory.isEnabled = enabled
         binding.chipGroupTraits.isEnabled = enabled
+        binding.switchPublic.isEnabled = enabled
         binding.btnAiGenerate.isEnabled = enabled // 按钮本身在 event.Loading 中会被特殊处理
         binding.btnCreate.isEnabled = enabled
     }
@@ -175,5 +210,13 @@ class CreatePersonaActivity : AppCompatActivity() {
             binding.progressBarHorizontal.visibility = View.GONE
             binding.progressBarHorizontal.progress = 0
         }
+    }
+
+    companion object {
+        const val EXTRA_PERSONA_ID = "PERSONA_EDIT_ID"
+        const val EXTRA_PERSONA_NAME = "PERSONA_EDIT_NAME"
+        const val EXTRA_PERSONA_BACKSTORY = "PERSONA_EDIT_BACKSTORY"
+        const val EXTRA_PERSONA_TRAITS = "PERSONA_EDIT_TRAITS"
+        const val EXTRA_PERSONA_PUBLIC = "PERSONA_EDIT_PUBLIC"
     }
 }

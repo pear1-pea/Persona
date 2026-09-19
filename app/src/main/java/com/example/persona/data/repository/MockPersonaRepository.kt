@@ -67,7 +67,7 @@ class MockPersonaRepository @Inject constructor() : PersonaRepository {
         return _personas.find { it.id == id }
     }
 
-    override suspend fun addPersona(name: String, traits: List<String>, backstory: String) {
+    override suspend fun addPersona(name: String, traits: List<String>, backstory: String, isPublic: Boolean) {
         val id = UUID.randomUUID().toString()
         val newPersona = Persona(
             id = id,
@@ -76,8 +76,31 @@ class MockPersonaRepository @Inject constructor() : PersonaRepository {
             postImageUrl = "https://picsum.photos/seed/$id/800/600", 
             traits = traits,
             backstory = backstory,
-            creatorId = "me"
+            creatorId = "me",
+            isPublic = isPublic
         )
         _personas.add(0, newPersona)
+    }
+
+    override suspend fun updatePersona(
+        id: String,
+        name: String,
+        traits: List<String>,
+        backstory: String,
+        isPublic: Boolean
+    ) {
+        val index = _personas.indexOfFirst { it.id == id }
+        if (index >= 0) {
+            _personas[index] = _personas[index].copy(
+                name = name,
+                traits = traits,
+                backstory = backstory,
+                isPublic = isPublic
+            )
+        }
+    }
+
+    override suspend fun deletePersona(id: String) {
+        _personas.removeAll { it.id == id }
     }
 }

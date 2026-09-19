@@ -8,9 +8,10 @@ import com.example.persona.core.ai.GenerationErrorType
 import com.example.persona.core.ai.GenerationEvent
 import com.example.persona.core.ai.GenerationMetrics
 import com.example.persona.core.ai.prompt.ConservativeTokenizer
+import com.example.persona.core.auth.AuthTokenProvider
 import com.example.persona.data.remote.CloudGenerationException
-import com.example.persona.data.remote.DeepSeekApi
-import com.example.persona.data.remote.DeepSeekConfig
+import com.example.persona.data.remote.CloudChatApi
+import com.example.persona.data.remote.BackendConfig
 import com.example.persona.data.remote.dto.ChatRequest
 import com.example.persona.data.remote.dto.ChatResponse
 import com.example.persona.data.remote.dto.MessageDto
@@ -34,8 +35,9 @@ import java.io.BufferedReader
 import java.util.concurrent.atomic.AtomicReference
 
 class CloudChatRepository @Inject constructor(
-    private val api: DeepSeekApi,
-    private val config: DeepSeekConfig
+    private val api: CloudChatApi,
+    private val config: BackendConfig,
+    private val authTokenProvider: AuthTokenProvider
 ) {
     fun streamResponse(
         systemPrompt: String,
@@ -45,13 +47,18 @@ class CloudChatRepository @Inject constructor(
         val startedAt = System.nanoTime()
         var firstTokenAt: Long? = null
         val partialText = StringBuilder()
-        if (config.apiKey.isBlank()) {
+        val cloudToken = if (config.isConfigured) {
+            authTokenProvider.currentToken() ?: authTokenProvider.refreshToken()
+        } else {
+            null
+        }
+        if (!config.isConfigured || cloudToken.isNullOrBlank()) {
             trySend(
                 GenerationEvent.Failed(
                     backend = Backend.CLOUD,
                     error = GenerationError(
                         type = GenerationErrorType.NOT_CONFIGURED,
-                        message = "云端 API 未配置"
+                        message = if (!config.isConfigured) "请配置 Backend 地址" else "请重新登录后使用云端"
                     ),
                     partialText = ""
                 )
@@ -73,8 +80,8 @@ class CloudChatRepository @Inject constructor(
         call.enqueue(object : Callback<ResponseBody> {
             override fun onResponse(call: Call<ResponseBody>, response: Response<ResponseBody>) {
                 if (!response.isSuccessful) {
-                    val errorBody = response.errorBody()?.string().orEmpty()
-                    Log.e(TAG, "DeepSeek error ${response.code()}: $errorBody")
+                    response.errorBody()?.close()
+                    Log.e(TAG, "Backend error ${response.code()}")
                     trySend(
                         GenerationEvent.Failed(
                             backend = Backend.CLOUD,

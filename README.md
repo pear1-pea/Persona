@@ -51,19 +51,24 @@
 
 ## 🚀 快速开始 (Setup)
 
-由于本项目包含大模型文件和敏感 API Key，请按照以下步骤配置环境：
+由于本项目包含端侧大模型文件并依赖受控 Backend，请按照以下步骤配置环境：
 
 ### 1. 克隆项目
 
-### 2. 配置 API Key
+### 2. 配置 Backend
 
-在项目根目录下创建 `local.properties` 文件，添加 DeepSeek 和 Authing 配置：
+在项目根目录下创建 `local.properties` 文件，添加 Backend 配置：
 
-    DEEPSEEK_API_KEY=sk-your-deepseek-key
+    PERSONA_BACKEND_BASE_URL=https://api.example.cn/
     DEEPSEEK_MODEL_ID=deepseek-v4-flash
-    AUTHING_APP_ID=6a7096f7a1934ab88b61704a
 
-`DEEPSEEK_MODEL_ID` 和 `AUTHING_APP_ID` 都有默认值；本地调试至少需要填写 `DEEPSEEK_API_KEY`，否则 `@cloud` 会提示云端 Key 未配置。
+`DEEPSEEK_MODEL_ID` 有默认值。客户端不配置 DeepSeek API key，DeepSeek key 只能保存在 Backend 服务端。
+
+客户端使用邮箱和密码向 Backend 注册或登录，得到随机 session token；token 由 Android Keystore 保护，数据库只保存 token hash。所有私有 Persona 和 AI cloud 请求都携带 `Authorization: Bearer <session token>`。聊天中打开“仅本地”可禁止云端 fallback；关闭该开关后 `@cloud` 可强制云端，`@local` 可作为仅本地快捷方式。
+
+Backend 实现位于 `backend/`。部署前先阅读 `backend/README.md`，配置 PostgreSQL、HTTPS 和服务端 DeepSeek key。Android 只配置 Backend URL。
+
+Persona 数据源策略：登录状态下 Backend 是权威源，离线状态下 Room 是独立本地源；离线创建的 persona 不会自动上传，两个来源也不会按 ID 自动合并。Backend 从当前 session 生成 `creatorId`，客户端请求不能自行指定所有者。
 
 ### 3. 部署端侧模型 (第一阶段)
 
@@ -90,7 +95,7 @@ Sync Gradle 并运行 App。当前项目固定使用 NDK `27.0.11718014`；如�
 - **[架构演进] 分布式多租户架构 (Multi-Tenant Architecture)**
 
   - 从当前的“单机沙盒”模式演进为支持多用户并发的云端系统。
-  - 延续 **Authing** 登录体系，并在后续后端中实现用户身份与数据隔离。
+  - 延续 Backend 邮箱 session 体系，并在后续后端中实现更完整的用户身份与数据隔离。
   - 构建 **Sync Adapter**，实现本地 Room 数据库与云端数据库的双向增量同步，让用户的数字分身在多端无缝漫游。
 - **[前沿探索] 端侧 Agent 编排与 MoE (Mixture of Experts) 机制**
 

@@ -15,12 +15,13 @@ import androidx.room.PrimaryKey
             onDelete = ForeignKey.CASCADE // cascade delete
         )
     ],
-    indices = [Index(value = ["personaId"])]
+    indices = [Index(value = ["personaId", "ownerId"])]
 )
 data class MessageEntity(
     @PrimaryKey
     val id: String,          // UUID
     val personaId: String,   
+    val ownerId: String = "OFFLINE_USER",
     val content: String,
     val isFromUser: Boolean, 
     val timestamp: Long,

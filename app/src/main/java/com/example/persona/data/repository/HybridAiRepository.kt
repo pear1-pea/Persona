@@ -11,6 +11,13 @@ import com.example.persona.core.ai.GenerationSession
 import com.example.persona.core.ai.InstalledModel
 import com.example.persona.core.ai.LocalAiEngine
 import com.example.persona.core.ai.LocalModelManager
+import com.example.persona.core.ai.PrivacyLevel
+import com.example.persona.core.ai.Route
+import com.example.persona.core.ai.RoutingContextProvider
+import com.example.persona.core.ai.RoutingDecision
+import com.example.persona.core.ai.RoutingInput
+import com.example.persona.core.ai.HybridRouter
+import com.example.persona.core.ai.TaskComplexity
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -30,13 +37,17 @@ import javax.inject.Singleton
 class HybridAiRepository @Inject constructor(
     private val cloudRepository: CloudChatRepository,
     private val localAiEngine: LocalAiEngine,
-    private val localModelManager: LocalModelManager
+    private val localModelManager: LocalModelManager,
+    private val router: HybridRouter,
+    private val routingContextProvider: RoutingContextProvider
 ) {
     enum class Mode { CLOUD, LOCAL }
 
     val localEngineState = localAiEngine.state
     private val _activeMode = MutableStateFlow(Mode.CLOUD)
     val activeMode = _activeMode.asStateFlow()
+    private val _lastRoutingDecision = MutableStateFlow<RoutingDecision?>(null)
+    val lastRoutingDecision = _lastRoutingDecision.asStateFlow()
 
     private val routeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val routeLock = Any()
@@ -88,16 +99,67 @@ class HybridAiRepository @Inject constructor(
     }
 
     suspend fun selectModeForGeneration(forceCloud: Boolean, localEnabled: Boolean = true): Mode {
-        if (forceCloud || !localEnabled) {
-            _activeMode.value = Mode.CLOUD
-            return Mode.CLOUD
-        }
+        val decision = selectRouteForGeneration(
+            forceCloud = forceCloud,
+            localOnly = false,
+            privacyLevel = PrivacyLevel.NORMAL,
+            taskComplexity = TaskComplexity.NORMAL,
+            localEnabled = localEnabled
+        )
+        return decision.toMode()
+    }
 
-        return if (ensureLocalReady()) {
-            Mode.LOCAL
-        } else {
-            Mode.CLOUD
+    suspend fun selectRouteForGeneration(
+        forceCloud: Boolean,
+        localOnly: Boolean = false,
+        privacyLevel: PrivacyLevel,
+        taskComplexity: TaskComplexity,
+        latencyBudgetMs: Long? = null,
+        localEnabled: Boolean = true
+    ): RoutingDecision {
+        val profile = localModelManager.deviceCapability()
+        val model = localModelManager.currentModel.value
+        val admission = localModelManager.currentAdmission.value?.status
+            ?: if (model == null) com.example.persona.core.ai.ModelAdmission.BLOCKED
+            else com.example.persona.core.ai.ModelAdmission.RISKY
+        val failureRate = model?.let { localModelManager.recentFailureCount(it.id) / MAX_LOCAL_FAILURE_SAMPLES }
+            ?: 0f
+        var decision = router.decide(
+            RoutingInput(
+                forceCloud = forceCloud || !localEnabled,
+                localOnly = localOnly,
+                localAdmission = admission,
+                privacyLevel = privacyLevel,
+                taskComplexity = taskComplexity,
+                networkState = routingContextProvider.networkState(),
+                batteryPercent = profile.batteryPercent,
+                thermalStatus = profile.thermalStatus,
+                powerSaveMode = profile.powerSaveMode,
+                latencyBudgetMs = latencyBudgetMs,
+                recentLocalFailureRate = failureRate
+            )
+        )
+
+        if (decision.isLocalPreferred) {
+            if (!ensureLocalReady()) {
+                decision = if (decision.route == Route.LOCAL) {
+                    decision.copy(
+                        reasons = decision.reasons + "本地 runtime 未通过初始化或 smoke test"
+                    )
+                } else {
+                    decision.copy(
+                        route = Route.CLOUD,
+                        reasons = decision.reasons + "本地 runtime 未通过初始化或 smoke test，改用云端"
+                    )
+                }
+            }
         }
+        _lastRoutingDecision.value = decision
+        Log.i(TAG, "Routing decision: route=${decision.route}, reasons=${decision.reasons.joinToString(";")}")
+        if (!decision.isLocalPreferred) {
+            _activeMode.value = Mode.CLOUD
+        }
+        return decision
     }
 
     fun stopGeneration(session: GenerationSession) {
@@ -114,7 +176,8 @@ class HybridAiRepository @Inject constructor(
         session: GenerationSession,
         systemPrompt: String,
         userMessage: String,
-        history: List<ChatMessage> = emptyList()
+        history: List<ChatMessage> = emptyList(),
+        route: Route = Route.LOCAL_THEN_CLOUD
     ): Flow<GenerationEvent> = when (mode) {
         Mode.CLOUD -> flow {
             _activeMode.value = Mode.CLOUD
@@ -175,7 +238,7 @@ class HybridAiRepository @Inject constructor(
                         partialText = localPartial.toString()
                     )
                 }
-                if (localFailure != null) {
+                if (localFailure != null && route == Route.LOCAL_THEN_CLOUD) {
                     Log.e(TAG, "Local generation failed; falling back to cloud")
                     localModelManager.currentModel.value?.let { model ->
                         localModelManager.recordLocalLoadFailure(
@@ -186,6 +249,14 @@ class HybridAiRepository @Inject constructor(
                     _activeMode.value = Mode.CLOUD
                     emit(localFailure)
                     emitAll(cloudRepository.streamResponse(systemPrompt, userMessage, history))
+                } else if (localFailure != null) {
+                    localModelManager.currentModel.value?.let { model ->
+                        localModelManager.recordLocalLoadFailure(
+                            model,
+                            localFailure.error.cause ?: IllegalStateException(localFailure.error.message)
+                        )
+                    }
+                    emit(localFailure)
                 }
             } finally {
                 synchronized(routeLock) {
@@ -310,5 +381,10 @@ class HybridAiRepository @Inject constructor(
 
     private companion object {
         const val TAG = "HybridAiRepository"
+        const val MAX_LOCAL_FAILURE_SAMPLES = 3f
+    }
+
+    private fun RoutingDecision.toMode(): Mode {
+        return if (isLocalPreferred) Mode.LOCAL else Mode.CLOUD
     }
 }

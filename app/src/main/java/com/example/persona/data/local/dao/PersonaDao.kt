@@ -18,6 +18,10 @@ interface PersonaDao {
     suspend fun getAllPersonas(): List<PersonaWithTraits>
 
     @Transaction
+    @Query("SELECT * FROM personas WHERE creatorId = 'system'")
+    suspend fun getPublicSeedPersonas(): List<PersonaWithTraits>
+
+    @Transaction
     @Query("SELECT * FROM personas WHERE creatorId = :creatorId")
     suspend fun getPersonasByCreator(creatorId: String): List<PersonaWithTraits>
 
@@ -38,6 +42,16 @@ interface PersonaDao {
     }
 
     @Transaction
-    @Query("SELECT * FROM personas WHERE id = :id")
-    suspend fun getPersonaById(id: String): PersonaWithTraits?
+    @Query("SELECT * FROM personas WHERE id = :id AND (creatorId = :creatorId OR creatorId = 'system')")
+    suspend fun getPersonaById(id: String, creatorId: String): PersonaWithTraits?
+
+    @Transaction
+    @Query("SELECT * FROM personas WHERE id = :id AND creatorId = 'system'")
+    suspend fun getPublicSeedPersonaById(id: String): PersonaWithTraits?
+
+    @Query("DELETE FROM personas WHERE id = :id AND creatorId = :creatorId")
+    suspend fun deletePersona(id: String, creatorId: String): Int
+
+    @Query("DELETE FROM personas WHERE creatorId = :creatorId")
+    suspend fun deletePersonasByCreator(creatorId: String)
 }

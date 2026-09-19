@@ -27,6 +27,8 @@ class LocalModelManager @Inject constructor(
     private val preferences = context.getSharedPreferences("local_model_settings", Context.MODE_PRIVATE)
     private val _currentModel = MutableStateFlow<InstalledModel?>(null)
     val currentModel: StateFlow<InstalledModel?> = _currentModel.asStateFlow()
+    private val _currentAdmission = MutableStateFlow<ModelAdmissionReport?>(null)
+    val currentAdmission: StateFlow<ModelAdmissionReport?> = _currentAdmission.asStateFlow()
 
     suspend fun scanModels(): List<ModelScanReport> = withContext(Dispatchers.IO) {
         scanModelReports()
@@ -34,16 +36,21 @@ class LocalModelManager @Inject constructor(
 
     suspend fun refreshModelReports(): List<ModelScanReport> = withContext(Dispatchers.IO) {
         val reports = scanModelReports()
-        val readyModels = reports.mapNotNull { report ->
-            (report.result as? ModelScanResult.Ready)
-                ?.takeIf { it.admission.isSelectable }
-                ?.model
-        }.distinctBy(InstalledModel::id)
-
-        val selectedModel = findSelectedModel(readyModels)
+        val selectedReady = reports
+            .mapNotNull { report ->
+                (report.result as? ModelScanResult.Ready)
+                    ?.takeIf { it.admission.isSelectable }
+            }
+            .firstOrNull { ready ->
+                ready.model.modelDir == preferences.getString(KEY_CURRENT_MODEL_DIR, null) ||
+                    ready.model.id == preferences.getString(KEY_CURRENT_MODEL_ID, null)
+            }
+        val selectedModel = selectedReady?.model
         _currentModel.value = selectedModel
+        _currentAdmission.value = selectedReady?.admission
         if (selectedModel == null) {
             clearCurrentModelPreference()
+            _currentAdmission.value = null
         }
         reports
     }
@@ -68,6 +75,7 @@ class LocalModelManager @Inject constructor(
         val model = ready.model
         clearLocalLoadFailureHistory(model.id)
         _currentModel.value = model
+        _currentAdmission.value = ready.admission
         preferences.edit()
             .putString(KEY_CURRENT_MODEL_ID, model.id)
             .putString(KEY_CURRENT_MODEL_DIR, model.modelDir)
@@ -77,6 +85,7 @@ class LocalModelManager @Inject constructor(
 
     suspend fun clearCurrentModel() = withContext(Dispatchers.IO) {
         _currentModel.value = null
+        _currentAdmission.value = null
         clearCurrentModelPreference()
     }
 
@@ -85,6 +94,7 @@ class LocalModelManager @Inject constructor(
         val deleted = !target.exists() || target.deleteRecursively()
         if (deleted && currentModelMatches(target)) {
             _currentModel.value = null
+            _currentAdmission.value = null
             clearCurrentModelPreference()
         }
         deleted

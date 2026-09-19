@@ -7,6 +7,8 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.persona.data.local.AppDatabase
 import com.example.persona.data.local.MIGRATION_2_3
 import com.example.persona.data.local.MIGRATION_3_4
+import com.example.persona.data.local.MIGRATION_4_5
+import com.example.persona.data.local.MIGRATION_5_6
 import com.example.persona.data.local.dao.MessageDao 
 import com.example.persona.data.local.dao.PersonaDao
 import com.example.persona.data.local.entity.PersonaEntity
@@ -53,7 +55,7 @@ object DatabaseModule {
                     refreshSeedPersonaBackstories(db)
                 }
             })
-            .addMigrations(MIGRATION_2_3, MIGRATION_3_4)
+            .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
             .build()
     }
 

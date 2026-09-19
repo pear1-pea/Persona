@@ -1,4 +1,3 @@
-
 package com.example.persona.features.auth
 
 import android.os.Bundle
@@ -15,80 +14,54 @@ import androidx.navigation.fragment.findNavController
 import com.example.persona.R
 import com.example.persona.databinding.FragmentSignInBinding
 import dagger.hilt.android.AndroidEntryPoint
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
-
-const val TAG = "SignInFragment"
+import kotlinx.coroutines.flow.collect
 
 @AndroidEntryPoint
 class SignInFragment : Fragment() {
-
     private var _binding: FragmentSignInBinding? = null
     private val binding get() = _binding!!
-
     private val viewModel: AuthViewModel by viewModels()
 
-    override fun onCreateView(
-        inflater: LayoutInflater,
-        container: ViewGroup?,
-        savedInstanceState: Bundle?
-    ): View {
+    override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, state: Bundle?): View {
         _binding = FragmentSignInBinding.inflate(inflater, container, false)
         return binding.root
     }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
-        super.onViewCreated(view, savedInstanceState)
-
-        binding.btnSignIn.setOnClickListener { handleSignIn() }
+        binding.btnSignIn.setOnClickListener { signIn() }
         binding.btnGoToSignUp.setOnClickListener {
             findNavController().navigate(R.id.action_signInFragment_to_signUpFragment)
         }
-        binding.btnPhoneSignIn.setOnClickListener {
-            val action = SignInFragmentDirections.actionSignInFragmentToSignUpFragment(
-                isPhoneLogin = true
-            )
-            findNavController().navigate(action)
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                viewModel.errorEvents.collect { message ->
+                    Toast.makeText(requireContext(), message, Toast.LENGTH_LONG).show()
+                }
+            }
         }
-
-        observeErrorEvents()
-        observeSignInSuccess()
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                viewModel.isSubmitting.collect { submitting ->
+                    binding.btnSignIn.isEnabled = !submitting
+                    binding.btnSignIn.text = if (submitting) "登录中..." else "登录"
+                }
+            }
+        }
     }
 
-    private fun handleSignIn() {
-        val email = binding.etEmail.text.toString().trim()
-        val password = binding.etPassword.text.toString()
-
+    private fun signIn() {
+        val email = binding.etEmail.text?.toString()?.trim().orEmpty()
+        val password = binding.etPassword.text?.toString().orEmpty()
         if (email.isBlank() || password.isBlank()) {
-            Toast.makeText(context, "?????????", Toast.LENGTH_SHORT).show()
+            Toast.makeText(requireContext(), "请输入邮箱和密码", Toast.LENGTH_SHORT).show()
             return
         }
-
         viewModel.signIn(email, password)
     }
 
-    private fun observeErrorEvents() {
-        viewLifecycleOwner.lifecycleScope.launch {
-            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
-                viewModel.errorEvents.collect { errorMessage ->
-                    Toast.makeText(context, errorMessage, Toast.LENGTH_LONG).show()
-                }
-            }
-        }
-    }
-
-    private fun observeSignInSuccess() {
-        viewLifecycleOwner.lifecycleScope.launch {
-            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
-                viewModel.signInSuccess.collect {
-                    findNavController().navigate(R.id.action_signInFragment_to_feedFragment)
-                }
-            }
-        }
-    }
-
     override fun onDestroyView() {
-        super.onDestroyView()
         _binding = null
+        super.onDestroyView()
     }
 }

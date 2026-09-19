@@ -10,18 +10,21 @@ import com.example.persona.data.local.entity.MessageEntity
 @Dao
 interface MessageDao {
 
-    @Query("SELECT * FROM messages WHERE personaId = :personaId ORDER BY timestamp ASC")
-    fun getMessagesByPersonaId(personaId: String): PagingSource<Int, MessageEntity>
+    @Query("SELECT * FROM messages WHERE personaId = :personaId AND ownerId = :ownerId ORDER BY timestamp ASC")
+    fun getMessagesByPersonaId(personaId: String, ownerId: String): PagingSource<Int, MessageEntity>
 
-    @Query("SELECT * FROM messages WHERE personaId = :personaId ORDER BY timestamp DESC LIMIT :limit")
-    suspend fun getRecentMessagesByPersonaId(personaId: String, limit: Int): List<MessageEntity>
+    @Query("SELECT * FROM messages WHERE personaId = :personaId AND ownerId = :ownerId ORDER BY timestamp DESC LIMIT :limit")
+    suspend fun getRecentMessagesByPersonaId(personaId: String, ownerId: String, limit: Int): List<MessageEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertMessage(message: MessageEntity)
 
-    @Query("UPDATE messages SET content = :content, status = :status WHERE id = :id")
-    suspend fun updateMessageContent(id: String, content: String, status: String): Int
+    @Query("UPDATE messages SET content = :content, status = :status WHERE id = :id AND ownerId = :ownerId")
+    suspend fun updateMessageContent(id: String, ownerId: String, content: String, status: String): Int
 
-    @Query("DELETE FROM messages WHERE personaId = :personaId")
-    suspend fun deleteMessagesByPersonaId(personaId: String)
+    @Query("DELETE FROM messages WHERE personaId = :personaId AND ownerId = :ownerId")
+    suspend fun deleteMessagesByPersonaId(personaId: String, ownerId: String)
+
+    @Query("DELETE FROM messages WHERE ownerId = :ownerId")
+    suspend fun deleteMessagesByOwnerId(ownerId: String)
 }

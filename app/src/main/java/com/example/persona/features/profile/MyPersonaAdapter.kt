@@ -13,7 +13,8 @@ import com.example.persona.domain.model.Persona
 
 // Adapter fills Persona data into the RecyclerView
 class MyPersonaAdapter(
-    private val onClick: (Persona) -> Unit
+    private val onClick: (Persona) -> Unit,
+    private val onLongClick: (Persona) -> Unit
 ) : ListAdapter<Persona, MyPersonaAdapter.ViewHolder>(
     SimpleDiffCallback(
         areItemsSame = { old, new -> old.id == new.id },
@@ -46,6 +47,10 @@ class MyPersonaAdapter(
 
             root.setOnClickListener {
                 onClick(item) 
+            }
+            root.setOnLongClickListener {
+                onLongClick(item)
+                true
             }
         }
     }

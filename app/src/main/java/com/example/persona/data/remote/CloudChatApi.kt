@@ -7,9 +7,8 @@ import retrofit2.http.Body
 import retrofit2.http.POST
 import retrofit2.http.Streaming
 
-interface DeepSeekApi {
-
-    @POST("chat/completions")
+interface CloudChatApi {
+    @POST("api/chat/completions")
     @Streaming
     fun streamChat(@Body request: ChatRequest): Call<ResponseBody>
 }

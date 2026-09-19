@@ -1,6 +1,5 @@
 package com.example.persona.features.creation
 
-import android.util.Log
 import androidx.lifecycle.viewModelScope
 import com.example.persona.core.base.BaseViewModel
 import com.example.persona.data.repository.CloudChatRepository
@@ -39,8 +38,6 @@ class CreatePersonaViewModel @Inject constructor(
                 // Call cloud API
                 val jsonString = cloudRepository.generatePersonaProfile(keywords)
 
-                Log.d("CreatePersonaVM", "AI Raw Response: $jsonString")
-
                 val cleanJson = jsonString
                     .replace("```json", "")
                     .replace("```", "")
@@ -58,13 +55,30 @@ class CreatePersonaViewModel @Inject constructor(
     }
 
     // Save persona
-    fun createPersona(name: String, story: String, traits: List<String>) {
+    fun savePersona(
+        id: String?,
+        name: String,
+        story: String,
+        traits: List<String>,
+        isPublic: Boolean
+    ) {
         if (name.isBlank()) return
 
         launchCatching (block = {
-            repository.addPersona(name, traits, story)
+            if (id == null) {
+                repository.addPersona(name, traits, story, isPublic)
+            } else {
+                repository.updatePersona(id, name, traits, story, isPublic)
+            }
             _event.emit(CreationEvent.Success)
         }
         )
+    }
+
+    fun deletePersona(id: String) {
+        launchCatching(block = {
+            repository.deletePersona(id)
+            _event.emit(CreationEvent.Success)
+        })
     }
 }

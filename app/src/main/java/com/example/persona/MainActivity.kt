@@ -3,12 +3,17 @@ package com.example.persona
 import android.content.Intent
 import android.os.Bundle
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.navigation.fragment.NavHostFragment
 import com.example.persona.core.auth.AuthManager
 import com.example.persona.databinding.ActivityMainBinding
 import com.example.persona.features.auth.AuthActivity
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.collect
 
 
 @AndroidEntryPoint
@@ -25,10 +30,16 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
         if (!authManager.isLoggedIn.value) {
-            val intent = Intent(this, AuthActivity::class.java)
-            startActivity(intent)
-            finish()
+            navigateToAuth()
             return
+        }
+
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                authManager.isLoggedIn.collect { isLoggedIn ->
+                    if (!isLoggedIn) navigateToAuth()
+                }
+            }
         }
 
 
@@ -57,5 +68,14 @@ class MainActivity : AppCompatActivity() {
 
         // Prevent duplicate clicks from refreshing
         binding.bottomNav.setOnItemReselectedListener {}
+    }
+
+    private fun navigateToAuth() {
+        startActivity(
+            Intent(this, AuthActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+            }
+        )
+        finish()
     }
 }

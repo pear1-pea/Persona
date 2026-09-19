@@ -6,8 +6,6 @@ import com.example.persona.core.auth.AuthManager
 import com.example.persona.core.base.BaseViewModel
 import com.example.persona.domain.model.Persona
 import com.example.persona.domain.repository.PersonaRepository
-import com.google.firebase.crashlytics.ktx.crashlytics
-import com.google.firebase.ktx.Firebase
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -40,7 +38,6 @@ class FeedViewModel @Inject constructor(
             },
             onError = { error ->
                 Log.e(TAG, "Error loading personas", error)
-                Firebase.crashlytics.recordException(error)
                 emitError("Failed to load personas: ${error.localizedMessage}")
             }
         )

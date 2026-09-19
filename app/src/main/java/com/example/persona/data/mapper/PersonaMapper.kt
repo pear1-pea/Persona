@@ -14,7 +14,8 @@ fun PersonaWithTraits.toDomain(): Persona {
         postImageUrl = this.persona.postImageUrl,
         backstory = this.persona.backstory,
         creatorId = this.persona.creatorId,
-        traits = this.traits.map { it.traitContent }
+        traits = this.traits.map { it.traitContent },
+        isPublic = this.persona.isPublic
     )
 }
 
@@ -26,7 +27,8 @@ fun Persona.toEntity(): PersonaEntity {
         avatarUrl = this.avatarUrl,
         postImageUrl = this.postImageUrl,
         backstory = this.backstory,
-        creatorId = this.creatorId
+        creatorId = this.creatorId,
+        isPublic = this.isPublic
     )
 }
 

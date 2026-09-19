@@ -7,5 +7,6 @@ data class Persona(
     val postImageUrl: String,
     val traits: List<String>,
     val backstory: String,
-    val creatorId: String
+    val creatorId: String,
+    val isPublic: Boolean = true
 )

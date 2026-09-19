@@ -16,10 +16,11 @@ fun MessageEntity.toDomain(): Message {
     )
 }
 
-fun Message.toEntity(): MessageEntity {
+fun Message.toEntity(ownerId: String = "OFFLINE_USER"): MessageEntity {
     return MessageEntity(
         id = id,
         personaId = personaId,
+        ownerId = ownerId,
         content = content,
         isFromUser = isFromUser,
         timestamp = timestamp,

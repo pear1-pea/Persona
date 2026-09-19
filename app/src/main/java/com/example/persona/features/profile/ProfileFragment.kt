@@ -65,15 +65,30 @@ class ProfileFragment : Fragment() {
             }
         }
 
-        adapter = MyPersonaAdapter { persona ->
-            // Tap a persona -> enter symbiosis mode (private chat)
-            val intent = Intent(requireContext(), ChatActivity::class.java).apply {
-                putExtra("PERSONA_ID", persona.id)
-                putExtra("PERSONA_NAME", persona.name)
-                putExtra("IS_SYMBIOSIS", true)
+        adapter = MyPersonaAdapter(
+            onClick = { persona ->
+                val intent = Intent(requireContext(), ChatActivity::class.java).apply {
+                    putExtra("PERSONA_ID", persona.id)
+                    putExtra("PERSONA_NAME", persona.name)
+                    putExtra("IS_SYMBIOSIS", true)
+                }
+                startActivity(intent)
+            },
+            onLongClick = { persona ->
+                startActivity(
+                    Intent(requireContext(), CreatePersonaActivity::class.java).apply {
+                        putExtra(CreatePersonaActivity.EXTRA_PERSONA_ID, persona.id)
+                        putExtra(CreatePersonaActivity.EXTRA_PERSONA_NAME, persona.name)
+                        putExtra(CreatePersonaActivity.EXTRA_PERSONA_BACKSTORY, persona.backstory)
+                        putStringArrayListExtra(
+                            CreatePersonaActivity.EXTRA_PERSONA_TRAITS,
+                            ArrayList(persona.traits)
+                        )
+                        putExtra(CreatePersonaActivity.EXTRA_PERSONA_PUBLIC, persona.isPublic)
+                    }
+                )
             }
-            startActivity(intent)
-        }
+        )
 
         binding.rvMyPersonas.apply {
             layoutManager = LinearLayoutManager(context, LinearLayoutManager.HORIZONTAL, false)
@@ -112,10 +127,8 @@ class ProfileFragment : Fragment() {
     }
 
     private fun renderUser(user: AuthUser?, fallbackUrl: String) {
-        binding.tvUserName.text = user?.nickname ?: user?.name ?: ""
-
-        val imageUrl = user?.photo ?: user?.picture
-        binding.ivUserAvatar.load(imageUrl ?: fallbackUrl) {
+        binding.tvUserName.text = user?.nickname.orEmpty()
+        binding.ivUserAvatar.load(fallbackUrl) {
             crossfade(true)
             placeholder(R.drawable.ic_launcher_background)
             error(R.drawable.ic_launcher_background)

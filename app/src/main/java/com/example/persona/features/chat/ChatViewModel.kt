@@ -10,6 +10,9 @@ import com.example.persona.core.ai.EngineState
 import com.example.persona.core.ai.GenerationError
 import com.example.persona.core.ai.GenerationEvent
 import com.example.persona.core.ai.GenerationSession
+import com.example.persona.core.ai.PrivacyLevel
+import com.example.persona.core.ai.Route
+import com.example.persona.core.ai.TaskComplexity
 import com.example.persona.core.base.BaseViewModel
 import com.example.persona.data.repository.HybridAiRepository
 import com.example.persona.domain.model.Message
@@ -50,6 +53,7 @@ class ChatViewModel @Inject constructor(
     val isGenerating = _isGenerating.asStateFlow()
 
     val localEngineState = hybridRepository.localEngineState
+    val lastRoutingDecision = hybridRepository.lastRoutingDecision
 
     init {
         viewModelScope.launch {
@@ -88,7 +92,7 @@ class ChatViewModel @Inject constructor(
         })
     }
 
-    fun sendMessage(userText: String) {
+    fun sendMessage(userText: String, localOnly: Boolean = false) {
         val persona = _currentPersona.value ?: return
         val finalUserText = userText.trim()
         if (finalUserText.isEmpty()) return
@@ -99,7 +103,7 @@ class ChatViewModel @Inject constructor(
         _isGenerating.value = true
         generationJob = viewModelScope.launch {
             try {
-                generateResponse(session, persona, finalUserText)
+                generateResponse(session, persona, finalUserText, localOnly)
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
@@ -132,9 +136,13 @@ class ChatViewModel @Inject constructor(
     private suspend fun generateResponse(
         session: GenerationSession,
         persona: Persona,
-        originalUserText: String
+        originalUserText: String,
+        requestedLocalOnly: Boolean
     ) {
-        val (forceCloud, userText) = parseModeOverride(originalUserText)
+        val modeOverride = parseModeOverride(originalUserText)
+        val localOnly = requestedLocalOnly || modeOverride.localOnly
+        val forceCloud = modeOverride.forceCloud && !localOnly
+        val userText = modeOverride.userText
         if (userText.isEmpty()) return
 
         val localHistory = chatRepository.getRecentMessages(persona.id, LOCAL_HISTORY_LIMIT)
@@ -158,6 +166,7 @@ class ChatViewModel @Inject constructor(
         var lastPersistMs = 0L
         var stoppedForRepetition = false
         var mode = HybridAiRepository.Mode.CLOUD
+        var route = Route.CLOUD_ONLY
         var terminalStatus: MessageStatus? = null
 
         suspend fun persist(
@@ -197,11 +206,29 @@ class ChatViewModel @Inject constructor(
         }
 
         try {
-            mode = hybridRepository.selectModeForGeneration(forceCloud)
+            val routingDecision = hybridRepository.selectRouteForGeneration(
+                forceCloud = forceCloud,
+                localOnly = localOnly,
+                privacyLevel = if (localOnly) PrivacyLevel.PRIVATE else PrivacyLevel.NORMAL,
+                taskComplexity = inferTaskComplexity(userText)
+            )
+            route = routingDecision.route
+            mode = if (routingDecision.isLocalPreferred) {
+                HybridAiRepository.Mode.LOCAL
+            } else {
+                HybridAiRepository.Mode.CLOUD
+            }
             _isCloudMode.value = mode == HybridAiRepository.Mode.CLOUD
             createAiMessage(if (mode == HybridAiRepository.Mode.LOCAL) Backend.MNN else Backend.CLOUD)
 
-            hybridRepository.streamResponse(mode, session, systemPrompt, userText, localHistory)
+            hybridRepository.streamResponse(
+                mode = mode,
+                session = session,
+                systemPrompt = systemPrompt,
+                userMessage = userText,
+                history = localHistory,
+                route = route
+            )
                 .collect { event ->
                     if (activeGenerationSession?.id != session.id) return@collect
                     if (stoppedForRepetition) return@collect
@@ -267,13 +294,22 @@ class ChatViewModel @Inject constructor(
                                 force = true
                             )
                             terminalStatus = MessageStatus.FAILED
-                            if (event.backend == Backend.MNN && mode == HybridAiRepository.Mode.LOCAL) {
+                            if (
+                                event.backend == Backend.MNN &&
+                                mode == HybridAiRepository.Mode.LOCAL &&
+                                route == Route.LOCAL_THEN_CLOUD
+                            ) {
                                 emitError("本地 AI 生成失败，已切换到云端。")
                                 _isCloudMode.value = true
                                 terminalStatus = null
                                 createAiMessage(Backend.CLOUD)
                             } else {
-                                emitError("生成失败: ${event.error.message}")
+                                val notice = if (route == Route.LOCAL) {
+                                    "本地 AI 生成失败，隐私策略未切换到云端。"
+                                } else {
+                                    "生成失败: ${event.error.message}"
+                                }
+                                emitError(notice)
                             }
                         }
                     }
@@ -442,14 +478,41 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    private fun parseModeOverride(text: String): Pair<Boolean, String> {
+    private data class ModeOverride(
+        val forceCloud: Boolean,
+        val localOnly: Boolean,
+        val userText: String
+    )
+
+    private fun parseModeOverride(text: String): ModeOverride {
         val trimmed = text.trim()
         val forceCloud = trimmed.startsWith(CLOUD_PREFIX, ignoreCase = true)
-        return if (forceCloud) {
-            true to trimmed.drop(CLOUD_PREFIX.length).trimStart()
-        } else {
-            false to trimmed
+        val localOnly = trimmed.startsWith(LOCAL_PREFIX, ignoreCase = true)
+        return when {
+            forceCloud -> ModeOverride(
+                forceCloud = true,
+                localOnly = false,
+                userText = trimmed.drop(CLOUD_PREFIX.length).trimStart()
+            )
+            localOnly -> ModeOverride(
+                forceCloud = false,
+                localOnly = true,
+                userText = trimmed.drop(LOCAL_PREFIX.length).trimStart()
+            )
+            else -> ModeOverride(false, false, trimmed)
         }
+    }
+
+    private fun inferTaskComplexity(text: String): TaskComplexity {
+        val normalized = text.lowercase()
+        if (text.length > COMPLEX_TASK_LENGTH ||
+            normalized.contains("```") ||
+            COMPLEX_TASK_TERMS.any { term -> normalized.contains(term) }
+        ) {
+            return TaskComplexity.COMPLEX
+        }
+        if (text.length <= SIMPLE_TASK_LENGTH) return TaskComplexity.SIMPLE
+        return TaskComplexity.NORMAL
     }
 
     private companion object {
@@ -462,12 +525,25 @@ class ChatViewModel @Inject constructor(
         const val REPETITION_STOPPED_MESSAGE = "已停止重复输出。"
         const val CLOUD_GENERIC_ERROR = "云端 AI 生成失败，请稍后再试。"
         const val CLOUD_PREFIX = "@cloud"
+        const val LOCAL_PREFIX = "@local"
         const val MAX_HISTORY_MESSAGE_CHARS = 1500
         const val MIN_REPEAT_SCAN_CHARS = 36
         const val MIN_REPEAT_SEGMENT_CHARS = 12
         const val MAX_REPEAT_SEGMENT_CHARS = 80
         const val MIN_REPEAT_SENTENCE_CHARS = 6
         const val REPEAT_COUNT = 3
+        const val SIMPLE_TASK_LENGTH = 40
+        const val COMPLEX_TASK_LENGTH = 1200
+        val COMPLEX_TASK_TERMS = setOf(
+            "代码",
+            "debug",
+            "架构",
+            "证明",
+            "分析",
+            "比较",
+            "refactor",
+            "implement"
+        )
         val HISTORY_EXCLUDED_MESSAGES = setOf(
             PLACEHOLDER_THINKING,
             STOPPED_RESPONSE_MESSAGE,

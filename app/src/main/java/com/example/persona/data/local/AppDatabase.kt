@@ -10,7 +10,7 @@ import com.example.persona.data.local.entity.TraitEntity
 
 @Database(
     entities = [PersonaEntity::class, TraitEntity::class, MessageEntity::class],
-    version = 4,
+    version = 6,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {

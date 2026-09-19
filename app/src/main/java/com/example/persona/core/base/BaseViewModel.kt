@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
@@ -23,8 +24,8 @@ abstract class BaseViewModel : ViewModel() {
     protected fun launchCatching(
         block: suspend CoroutineScope.() -> Unit,
         onError: ((Throwable) -> Unit)? = null
-    ) {
-        viewModelScope.launch(exceptionHandler) {
+    ): Job {
+        return viewModelScope.launch(exceptionHandler) {
             try {
                 block()
             } catch (e: Exception) {
@@ -46,10 +47,14 @@ abstract class BaseViewModel : ViewModel() {
     private fun handleException(t: Throwable) {
         val message = when (t) {
             is SocketTimeoutException -> "请求超时，服务器响应过慢"
-            is IOException -> "网络连接异常，请检查网络设置"
+            is IOException -> when (t.message) {
+                "请重新登录后访问云端",
+                "请配置有效的 HTTPS Backend 地址" -> t.message.orEmpty()
+                else -> "网络连接异常，请检查网络设置"
+            }
             is HttpException -> {
                 when (t.code()) {
-                    401 -> "认证失败 (API Key 无效)"
+                    401 -> "登录已失效，请重新登录"
                     403 -> "访问被拒绝"
                     404 -> "资源未找到"
                     500, 502, 503 -> "服务器内部错误，请稍后重试"

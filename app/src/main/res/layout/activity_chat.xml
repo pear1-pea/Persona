@@ -50,6 +50,16 @@
                     android:text="CLOUD READY"
                     android:textColor="@color/accent_cyan"
                     android:textSize="10sp" />
+
+                <TextView
+                    android:id="@+id/tvRouteReason"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:ellipsize="end"
+                    android:maxLines="1"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="9sp"
+                    android:visibility="gone" />
             </LinearLayout>
 
             <!-- Hybrid architecture indicator  -->
@@ -118,6 +128,16 @@
             android:paddingHorizontal="16dp"
             android:textColor="@color/text_primary"
             android:textColorHint="@color/text_secondary" />
+
+        <com.google.android.material.switchmaterial.SwitchMaterial
+            android:id="@+id/switchLocalOnly"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:contentDescription="仅本地生成"
+            android:text="仅本地"
+            android:textColor="@color/text_secondary"
+            android:textSize="11sp" />
 
         <com.google.android.material.floatingactionbutton.FloatingActionButton
             android:id="@+id/btnSend"

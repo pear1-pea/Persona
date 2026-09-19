@@ -1,262 +1,155 @@
-
 package com.example.persona.core.auth
 
-import android.util.Log
-import cn.authing.guard.AuthCallback
-import cn.authing.guard.Authing
-import cn.authing.guard.data.UserInfo
-import cn.authing.guard.network.AuthClient
-import com.example.persona.core.util.UsernameGenerator
+import com.example.persona.data.remote.AuthApi
+import com.example.persona.data.remote.dto.AuthCredentials
+import com.example.persona.data.remote.dto.AuthSessionDto
+import com.example.persona.data.remote.dto.AuthSessionInfoDto
+import com.example.persona.data.remote.dto.ChangePasswordRequest
+import com.example.persona.data.remote.dto.DeleteAccountRequest
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.suspendCancellableCoroutine
-import org.json.JSONObject
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import retrofit2.HttpException
 import javax.inject.Inject
 import javax.inject.Singleton
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 
 data class AuthUser(
-    val id: String? = null,
-    val sub: String? = null,
-    val email: String? = null,
-    val phoneNumber: String? = null,
-    val username: String? = null,
-    val nickname: String? = null,
-    val name: String? = null,
-    val photo: String? = null,
-    val picture: String? = null,
+    val id: String,
+    val email: String,
+    val nickname: String = email.substringBefore('@')
 )
 
 @Singleton
-class AuthManager @Inject constructor() {
-
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val initialUser = Authing.getCurrentUser()?.toAuthUser()
-
-    private val _isLoggedIn = MutableStateFlow(initialUser != null)
-    private val _currentUser = MutableStateFlow(initialUser)
+class AuthManager @Inject constructor(
+    private val authApi: AuthApi,
+    private val sessionTokenStore: SessionTokenStore
+) : AuthTokenProvider {
+    private val sessionMutex = Mutex()
+    @Volatile
+    private var activeSession = sessionTokenStore.read()
+    private val _isLoggedIn = MutableStateFlow(activeSession != null)
+    private val _currentUser = MutableStateFlow(activeSession?.toAuthUser())
 
     val isLoggedIn: StateFlow<Boolean> = _isLoggedIn.asStateFlow()
     val currentUser: StateFlow<AuthUser?> = _currentUser.asStateFlow()
-
-    val currentUserId: String?
-        get() = _currentUser.value?.sub
-            ?: _currentUser.value?.id
-            ?: _currentUser.value?.email
-            ?: _currentUser.value?.phoneNumber
-            ?: _currentUser.value?.username
+    val currentUserId: String? get() = _currentUser.value?.id
 
     internal val offlineUserId = "OFFLINE_USER"
     val currentRepoId: String get() = currentUserId ?: offlineUserId
 
-    init {
-        initialUser?.let { user ->
-            scope.launch {
-                ensureDisplayName(user)
-            }
+    override fun currentToken(): String? = activeSession?.token
+
+    override suspend fun refreshToken(): String? = sessionMutex.withLock {
+        val session = activeSession ?: sessionTokenStore.read()
+        if (session == null) {
+            clearSession()
+            null
+        } else {
+            _currentUser.value = session.toAuthUser()
+            _isLoggedIn.value = true
+            session.token
         }
     }
 
-    suspend fun signIn(account: String, password: String) {
-        val userInfo = awaitUserInfo { callback ->
-            AuthClient.loginByAccount(account, password, false, null, callback)
-        }
-        updateCurrentUser(userInfo.toAuthUser())
+    override fun invalidateSession() {
+        clearSession()
+    }
+
+    suspend fun signIn(email: String, password: String) {
+        saveSession(authApi.login(AuthCredentials(normalizeEmail(email), password)))
     }
 
     suspend fun signUp(email: String, password: String) {
-        val userInfo = awaitUserInfo { callback ->
-            AuthClient.registerByEmail(email, password, null, callback)
-        }
-        updateCurrentUser(userInfo.toAuthUser())
-    }
-
-    suspend fun sendPhoneVerificationCode(phoneNumber: String) {
-        val (countryCode, phone) = normalizePhoneNumber(phoneNumber)
-        awaitOperation { callback ->
-            AuthClient.sendSms(countryCode, phone, callback)
-        }
-    }
-
-    suspend fun signInWithPhoneCode(phoneNumber: String, code: String) {
-        val (countryCode, phone) = normalizePhoneNumber(phoneNumber)
-        val userInfo = awaitUserInfo { callback ->
-            AuthClient.loginByPhoneCode(countryCode, phone, code, false, null, callback)
-        }
-        updateCurrentUser(userInfo.toAuthUser())
-    }
-
-    suspend fun refreshCurrentUser(fallback: AuthUser? = null) {
-        if (Authing.getCurrentUser() == null) {
-            if (fallback != null) {
-                updateCurrentUser(fallback)
-            } else {
-                clearSession()
-            }
-            return
-        }
-
-        val user = runCatching {
-            awaitUserInfo { callback ->
-                AuthClient.getCurrentUser(callback)
-            }.toAuthUser()
-        }.getOrElse { error ->
-            Log.w(TAG, "Failed to load Authing profile", error)
-            fallback ?: Authing.getCurrentUser()?.toAuthUser()
-        }
-
-        if (user != null) {
-            updateCurrentUser(user)
-        } else {
-            clearSession()
-        }
+        saveSession(authApi.register(AuthCredentials(normalizeEmail(email), password)))
     }
 
     fun logout() {
-        runCatching {
-            AuthClient.logout(object : AuthCallback<Any?> {
-                override fun call(code: Int, message: String, data: Any?) {
-                    if (code != 200) {
-                        Log.w(TAG, "Authing logout failed: $message")
-                    }
-                    clearSession()
-                }
-            })
-        }.onFailure { error ->
-            Log.w(TAG, "Authing logout invocation failed", error)
-            clearSession()
+        val token = currentToken()
+        clearSession()
+        if (!token.isNullOrBlank()) {
+            CoroutineScope(Dispatchers.IO).launch {
+                runCatching { authApi.logout("Bearer $token") }
+            }
         }
     }
 
-    private fun updateCurrentUser(user: AuthUser) {
-        _currentUser.value = user
+    suspend fun changePassword(currentPassword: String, newPassword: String) {
+        val token = requireToken()
+        saveSession(
+            authApi.changePassword(
+                "Bearer $token",
+                ChangePasswordRequest(currentPassword, newPassword)
+            )
+        )
+    }
+
+    suspend fun deleteAccount(currentPassword: String) {
+        val token = requireToken()
+        authApi.deleteAccount("Bearer $token", DeleteAccountRequest(currentPassword))
+        clearSession()
+    }
+
+    suspend fun getSessions(): List<AuthSessionInfoDto> {
+        return authApi.getSessions("Bearer ${requireToken()}")
+    }
+
+    suspend fun revokeOtherSessions() {
+        authApi.revokeOtherSessions("Bearer ${requireToken()}")
+    }
+
+    suspend fun refreshCurrentUser() {
+        validateSession()
+    }
+
+    suspend fun validateSession() {
+        val session = activeSession ?: return
+        try {
+            val user = authApi.me("Bearer ${session.token}")
+            _currentUser.value = AuthUser(user.id, user.email)
+            _isLoggedIn.value = true
+        } catch (error: HttpException) {
+            if (error.code() == 401) invalidateSession() else restoreLocalSession()
+        } catch (_: Exception) {
+            restoreLocalSession()
+        }
+    }
+
+    private fun saveSession(session: AuthSessionDto) {
+        val storedSession = StoredSession(
+            token = session.token,
+            userId = session.user.id,
+            email = session.user.email
+        )
+        sessionTokenStore.save(storedSession)
+        activeSession = storedSession
+        _currentUser.value = AuthUser(session.user.id, session.user.email)
         _isLoggedIn.value = true
-        ensureDisplayName(user)
     }
 
     private fun clearSession() {
+        activeSession = null
+        sessionTokenStore.clear()
         _currentUser.value = null
         _isLoggedIn.value = false
     }
 
-    private fun ensureDisplayName(user: AuthUser) {
-        if (!user.nickname.isNullOrBlank() || !user.name.isNullOrBlank()) {
-            return
-        }
-
-        val generatedName = UsernameGenerator.generate()
-        _currentUser.value = user.copy(nickname = generatedName, name = generatedName)
-
-        scope.launch {
-            runCatching {
-                val body = JSONObject().apply {
-                    put("nickname", generatedName)
-                    put("name", generatedName)
-                }
-                val updatedUser = awaitUserInfo { callback ->
-                    AuthClient.updateProfile(body, callback)
-                }
-                _currentUser.value = updatedUser.toAuthUser()
-            }.onFailure { error ->
-                Log.w(TAG, "Unable to persist generated Authing profile name", error)
-            }
+    private fun restoreLocalSession() {
+        activeSession?.let { session ->
+            _currentUser.value = session.toAuthUser()
+            _isLoggedIn.value = true
         }
     }
 
-    private fun normalizePhoneNumber(raw: String): Pair<String, String> {
-        val cleaned = raw.trim().replace(" ", "").replace("-", "")
-        return when {
-            cleaned.startsWith("+86") -> "+86" to cleaned.removePrefix("+86")
-            cleaned.startsWith("86") && cleaned.length > 11 -> "+86" to cleaned.removePrefix("86")
-            else -> "+86" to cleaned
-        }
+    private fun normalizeEmail(email: String): String = email.trim().lowercase()
+
+    private fun requireToken(): String {
+        return currentToken() ?: throw IllegalStateException("请重新登录")
     }
 
-    private suspend fun awaitUserInfo(
-        block: (AuthCallback<UserInfo?>) -> Unit,
-    ): UserInfo = suspendCancellableCoroutine { continuation ->
-        try {
-            block(object : AuthCallback<UserInfo?> {
-                override fun call(code: Int, message: String, data: UserInfo?) {
-                    if (!continuation.isActive) {
-                        return
-                    }
-
-                    if (code == 200) {
-                        if (data != null) {
-                            continuation.resume(data)
-                        } else {
-                            continuation.resumeWithException(
-                                IllegalStateException(
-                                    message.ifBlank { "Authing returned empty user info" }
-                                )
-                            )
-                        }
-                    } else {
-                        continuation.resumeWithException(
-                            IllegalStateException(
-                                message.ifBlank { "Authing operation failed ($code)" }
-                            )
-                        )
-                    }
-                }
-            })
-        } catch (e: Exception) {
-            if (continuation.isActive) {
-                continuation.resumeWithException(e)
-            }
-        }
-    }
-
-    private suspend fun awaitOperation(
-        block: (AuthCallback<Any?>) -> Unit,
-    ) = suspendCancellableCoroutine<Unit> { continuation ->
-        try {
-            block(object : AuthCallback<Any?> {
-                override fun call(code: Int, message: String, data: Any?) {
-                    if (!continuation.isActive) {
-                        return
-                    }
-
-                    if (code == 200) {
-                        continuation.resume(Unit)
-                    } else {
-                        continuation.resumeWithException(
-                            IllegalStateException(
-                                message.ifBlank { "Authing operation failed ($code)" }
-                            )
-                        )
-                    }
-                }
-            })
-        } catch (e: Exception) {
-            if (continuation.isActive) {
-                continuation.resumeWithException(e)
-            }
-        }
-    }
-
-    private fun UserInfo.toAuthUser(): AuthUser {
-        return AuthUser(
-            id = id,
-            sub = sub,
-            email = email,
-            phoneNumber = getPhone_number(),
-            username = username,
-            nickname = nickname,
-            name = name,
-            photo = photo,
-            picture = picture,
-        )
-    }
-
-    companion object {
-        private const val TAG = "AuthManager"
-    }
+    private fun StoredSession.toAuthUser(): AuthUser = AuthUser(userId, email)
 }

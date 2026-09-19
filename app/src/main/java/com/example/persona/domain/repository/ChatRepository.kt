@@ -21,4 +21,6 @@ interface ChatRepository {
     )
 
     suspend fun deleteMessagesForPersona(personaId: String)
+
+    suspend fun deleteMessagesForOwner(ownerId: String)
 }

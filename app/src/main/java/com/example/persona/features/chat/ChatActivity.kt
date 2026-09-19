@@ -115,6 +115,13 @@ class ChatActivity : AppCompatActivity() {
                 }
 
                 launch {
+                    viewModel.lastRoutingDecision.collect { decision ->
+                        binding.tvRouteReason.text = decision?.reasons?.joinToString(" · ").orEmpty()
+                        binding.tvRouteReason.visibility = if (decision == null) View.GONE else View.VISIBLE
+                    }
+                }
+
+                launch {
                     viewModel.isGenerating.collect { isGenerating ->
                         binding.btnSend.setImageResource(
                             if (isGenerating) android.R.drawable.ic_menu_close_clear_cancel
@@ -147,7 +154,7 @@ class ChatActivity : AppCompatActivity() {
             val text = binding.etMessage.text.toString().trim()
             if (text.isNotEmpty()) {
                 shouldFollowLatestMessage = true
-                viewModel.sendMessage(text)
+                viewModel.sendMessage(text, binding.switchLocalOnly.isChecked)
                 binding.etMessage.setText("")
                 scrollToLatestMessage()
             }
