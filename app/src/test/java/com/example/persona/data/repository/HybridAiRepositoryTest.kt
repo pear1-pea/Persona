@@ -2,33 +2,44 @@ package com.example.persona.data.repository
 
 import com.example.persona.core.ai.Backend
 import com.example.persona.core.ai.ChatMessage
+import com.example.persona.core.ai.DeviceProfile
 import com.example.persona.core.ai.EngineState
+import com.example.persona.core.ai.GenerationError
+import com.example.persona.core.ai.GenerationErrorType
+import com.example.persona.core.ai.GenerationEvent
+import com.example.persona.core.ai.GenerationMetrics
 import com.example.persona.core.ai.GenerationSession
+import com.example.persona.core.ai.HybridRouter
 import com.example.persona.core.ai.InstalledModel
 import com.example.persona.core.ai.LocalAiEngine
 import com.example.persona.core.ai.LocalModelManager
+import com.example.persona.core.ai.ModelAdmission
+import com.example.persona.core.ai.ModelAdmissionReport
 import com.example.persona.core.ai.ModelFamilies
+import com.example.persona.core.ai.NetworkState
 import com.example.persona.core.ai.PromptFormats
-import com.example.persona.data.remote.CloudGenerationException
-import kotlinx.coroutines.awaitCancellation
+import com.example.persona.core.ai.RoutingContextProvider
+import com.example.persona.core.ai.ThermalStatus
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
-import org.mockito.kotlin.atLeastOnce
 import org.mockito.kotlin.any
+import org.mockito.kotlin.atLeastOnce
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
+import org.mockito.kotlin.never
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
 
@@ -37,29 +48,49 @@ class HybridAiRepositoryTest {
     private val cloudRepository: CloudChatRepository = mock()
     private val localEngine: LocalAiEngine = mock()
     private val localModelManager: LocalModelManager = mock()
+    private val routingContextProvider: RoutingContextProvider = mock()
+    private val router = HybridRouter()
     private val engineState = MutableStateFlow<EngineState>(EngineState.Ready)
     private val modelState = MutableStateFlow<InstalledModel?>(sampleModel())
+    private val admissionState = MutableStateFlow<ModelAdmissionReport?>(
+        ModelAdmissionReport(ModelAdmission.SUPPORTED)
+    )
     private lateinit var repository: HybridAiRepository
 
     @Before
     fun setUp() {
         whenever(localEngine.state).thenReturn(engineState)
+        runBlocking {
+            whenever(localEngine.smokeTest(any())).thenReturn(true)
+        }
         whenever(localModelManager.currentModel).thenReturn(modelState)
-        repository = HybridAiRepository(cloudRepository, localEngine, localModelManager)
+        whenever(localModelManager.currentAdmission).thenReturn(admissionState)
+        whenever(localModelManager.deviceCapability()).thenReturn(deviceProfile())
+        whenever(localModelManager.recentFailureCount(any())).thenReturn(0)
+        whenever(routingContextProvider.networkState()).thenReturn(NetworkState.UNMETERED)
+        repository = HybridAiRepository(
+            cloudRepository,
+            localEngine,
+            localModelManager,
+            router,
+            routingContextProvider
+        )
     }
 
     @Test
     fun `cloud mode delegates to CloudChatRepository`() = runTest {
-        whenever(cloudRepository.streamResponse(any(), any(), any())).thenReturn(flowOf("Hello", " World"))
+        whenever(cloudRepository.streamResponse(any(), any(), any())).thenReturn(
+            flowOf(delta("Hello"), delta(" World"), completed())
+        )
 
-        val tokens = repository.streamResponse(
+        val events = repository.streamResponse(
             mode = HybridAiRepository.Mode.CLOUD,
             session = GenerationSession(),
             systemPrompt = "system",
             userMessage = "user"
         ).toList()
 
-        assertEquals(listOf("Hello", " World"), tokens)
+        assertEquals(listOf("Hello", " World"), events.deltaTexts())
         assertEquals(HybridAiRepository.Mode.CLOUD, repository.activeMode.value)
         verify(cloudRepository).streamResponse("system", "user", emptyList())
     }
@@ -133,7 +164,7 @@ class HybridAiRepositoryTest {
 
         assertEquals(HybridAiRepository.Mode.CLOUD, mode)
         assertEquals(HybridAiRepository.Mode.CLOUD, repository.activeMode.value)
-        verify(localEngine, org.mockito.kotlin.never()).initialize(any())
+        verify(localEngine, never()).initialize(any())
     }
 
     @Test
@@ -147,10 +178,12 @@ class HybridAiRepositoryTest {
 
     @Test
     fun `local mode streams from local engine`() = runTest {
-        whenever(localEngine.streamResponse(any(), any(), any(), any())).thenReturn(flowOf("Local", " reply"))
+        whenever(localEngine.streamResponse(any(), any(), any(), any())).thenReturn(
+            flowOf(delta("Local"), delta(" reply"), completed())
+        )
         val history = listOf(ChatMessage("assistant", "older reply"))
 
-        val tokens = repository.streamResponse(
+        val events = repository.streamResponse(
             mode = HybridAiRepository.Mode.LOCAL,
             session = GenerationSession(),
             systemPrompt = "system",
@@ -158,7 +191,7 @@ class HybridAiRepositoryTest {
             history = history
         ).toList()
 
-        assertEquals(listOf("Local", " reply"), tokens)
+        assertEquals(listOf("Local", " reply"), events.deltaTexts())
         assertEquals(HybridAiRepository.Mode.LOCAL, repository.activeMode.value)
         verify(localEngine).streamResponse(
             any(),
@@ -170,69 +203,77 @@ class HybridAiRepositoryTest {
 
     @Test
     fun `local mode falls back to cloud when local fails before emitting`() = runTest {
-        whenever(localEngine.streamResponse(any(), any(), any(), any())).thenReturn(flow { throw IllegalStateException("no model") })
-        whenever(cloudRepository.streamResponse(any(), any(), any())).thenReturn(flowOf("cloud fallback"))
+        whenever(localEngine.streamResponse(any(), any(), any(), any())).thenReturn(
+            flow { throw IllegalStateException("no model") }
+        )
+        whenever(cloudRepository.streamResponse(any(), any(), any())).thenReturn(
+            flowOf(delta("cloud fallback"), completed())
+        )
 
-        val tokens = repository.streamResponse(
+        val events = repository.streamResponse(
             mode = HybridAiRepository.Mode.LOCAL,
             session = GenerationSession(),
             systemPrompt = "system",
             userMessage = "user"
         ).toList()
 
-        assertEquals(listOf("cloud fallback"), tokens)
+        assertEquals(Backend.MNN, (events.first() as GenerationEvent.Failed).backend)
+        assertEquals(GenerationErrorType.MODEL_RUNTIME, (events.first() as GenerationEvent.Failed).error.type)
+        assertEquals(listOf("cloud fallback"), events.deltaTexts())
         assertEquals(HybridAiRepository.Mode.CLOUD, repository.activeMode.value)
         verify(cloudRepository).streamResponse("system", "user", emptyList())
     }
 
     @Test
-    fun `local mode announces fallback to cloud when local fails after emitting`() = runTest {
+    fun `local mode emits typed failure before cloud fallback when local fails after emitting`() = runTest {
         whenever(localEngine.streamResponse(any(), any(), any(), any())).thenReturn(flow {
-            emit("partial local")
+            emit(delta("partial local"))
             throw IllegalStateException("native stopped")
         })
-        whenever(cloudRepository.streamResponse(any(), any(), any())).thenReturn(flowOf("cloud fallback"))
+        whenever(cloudRepository.streamResponse(any(), any(), any())).thenReturn(
+            flowOf(delta("cloud fallback"), completed())
+        )
 
-        val tokens = repository.streamResponse(
+        val events = repository.streamResponse(
             mode = HybridAiRepository.Mode.LOCAL,
             session = GenerationSession(),
             systemPrompt = "system",
             userMessage = "user"
         ).toList()
 
-        assertEquals(
-            listOf("partial local", "\n\n[本地 AI 生成中断，已切换到云端继续。]\n", "cloud fallback"),
-            tokens
-        )
+        assertEquals(listOf("partial local", "cloud fallback"), events.deltaTexts())
+        val localFailure = events[1] as GenerationEvent.Failed
+        assertEquals(Backend.MNN, localFailure.backend)
+        assertEquals("partial local", localFailure.partialText)
         assertEquals(HybridAiRepository.Mode.CLOUD, repository.activeMode.value)
-        verify(cloudRepository).streamResponse("system", "user", emptyList())
     }
 
     @Test
-    fun `cloud fallback failure preserves local output and propagates cloud error`() = runTest {
+    fun `cloud fallback failure preserves local output and emits cloud error`() = runTest {
         whenever(localEngine.streamResponse(any(), any(), any(), any())).thenReturn(flow {
-            emit("partial local")
+            emit(delta("partial local"))
             throw IllegalStateException("native stopped")
         })
         whenever(cloudRepository.streamResponse(any(), any(), any())).thenReturn(flow {
-            throw CloudGenerationException.Network(IllegalStateException("offline"))
+            emit(
+                GenerationEvent.Failed(
+                    backend = Backend.CLOUD,
+                    error = GenerationError(GenerationErrorType.NETWORK, "offline"),
+                    partialText = "partial local"
+                )
+            )
         })
 
-        val tokens = mutableListOf<String>()
-        val thrown = runCatching {
-            repository.streamResponse(
-                mode = HybridAiRepository.Mode.LOCAL,
-                session = GenerationSession(),
-                systemPrompt = "system",
-                userMessage = "user"
-            ).collect { tokens += it }
-        }.exceptionOrNull()
+        val events = repository.streamResponse(
+            mode = HybridAiRepository.Mode.LOCAL,
+            session = GenerationSession(),
+            systemPrompt = "system",
+            userMessage = "user"
+        ).toList()
 
-        assertEquals(
-            listOf("partial local", "\n\n[本地 AI 生成中断，已切换到云端继续。]\n"),
-            tokens
-        )
-        assertTrue(thrown is CloudGenerationException.Network)
+        assertEquals(listOf("partial local"), events.deltaTexts())
+        assertEquals(Backend.MNN, (events[1] as GenerationEvent.Failed).backend)
+        assertEquals(Backend.CLOUD, (events.last() as GenerationEvent.Failed).backend)
         assertEquals(HybridAiRepository.Mode.CLOUD, repository.activeMode.value)
     }
 
@@ -251,9 +292,9 @@ class HybridAiRepositoryTest {
             ).toList()
         }.exceptionOrNull()
 
-        assertEquals(CancellationException::class, thrown?.javaClass?.kotlin)
+        assertTrue(thrown is CancellationException)
         assertEquals(HybridAiRepository.Mode.LOCAL, repository.activeMode.value)
-        verify(cloudRepository, org.mockito.kotlin.never()).streamResponse(any(), any(), any())
+        verify(cloudRepository, never()).streamResponse(any(), any(), any())
     }
 
     @Test
@@ -332,22 +373,22 @@ class HybridAiRepositoryTest {
     fun `current model cleared during local generation stops generation and releases engine`() = runTest {
         val session = GenerationSession()
         whenever(localEngine.streamResponse(any(), any(), any(), any())).thenReturn(flow {
-            emit("partial")
+            emit(delta("partial"))
             awaitCancellation()
         })
 
-        val tokens = mutableListOf<String>()
+        val events = mutableListOf<GenerationEvent>()
         val job = backgroundScope.launch {
             repository.streamResponse(
                 mode = HybridAiRepository.Mode.LOCAL,
                 session = session,
                 systemPrompt = "system",
                 userMessage = "user"
-            ).toList(tokens)
+            ).toList(events)
         }
 
         awaitAssertion {
-            assertEquals(listOf("partial"), tokens)
+            assertEquals(listOf("partial"), events.deltaTexts())
         }
         modelState.value = null
 
@@ -372,6 +413,19 @@ class HybridAiRepositoryTest {
         }
     }
 
+    private fun deviceProfile() = DeviceProfile(
+        totalRamBytes = 8_000_000_000L,
+        availableMemBytes = 4_000_000_000L,
+        appMemoryClassBytes = 512_000_000L,
+        nativePssBytes = 100_000_000L,
+        freeStorageBytes = 4_000_000_000L,
+        abi = "arm64-v8a",
+        sdk = 35,
+        thermalStatus = ThermalStatus.NOMINAL,
+        batteryPercent = 80,
+        powerSaveMode = false
+    )
+
     private fun sampleModel(
         id: String = "qwen2.5-0.5b-instruct-mnn",
         modelDir: String = "/models/qwen2.5-0.5b-instruct-mnn"
@@ -385,4 +439,19 @@ class HybridAiRepositoryTest {
         promptFormat = PromptFormats.QWEN_CHATML_TEXT,
         contextWindow = 4096
     )
+
+    private fun delta(text: String): GenerationEvent = GenerationEvent.Delta(text)
+
+    private fun completed(): GenerationEvent = GenerationEvent.Completed(
+        GenerationMetrics(
+            firstTokenLatencyMs = null,
+            totalLatencyMs = 0L,
+            outputTokens = 0,
+            tokensPerSecond = 0.0
+        )
+    )
+
+    private fun List<GenerationEvent>.deltaTexts(): List<String> {
+        return filterIsInstance<GenerationEvent.Delta>().map { it.text }
+    }
 }

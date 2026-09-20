@@ -57,7 +57,7 @@ class RoomPersonaRepositoryTest {
 
     @Test
     fun `getPersonaById returns persona when found`() = runTest {
-        whenever(dao.getPersonaById("p1")).thenReturn(personaWithTraits)
+        whenever(dao.getPersonaById("p1", "user-1")).thenReturn(personaWithTraits)
 
         val result = repo.getPersonaById("p1")
 
@@ -67,7 +67,7 @@ class RoomPersonaRepositoryTest {
 
     @Test
     fun `getPersonaById returns null when not found`() = runTest {
-        whenever(dao.getPersonaById("unknown")).thenReturn(null)
+        whenever(dao.getPersonaById("unknown", "user-1")).thenReturn(null)
 
         val result = repo.getPersonaById("unknown")
 
@@ -76,7 +76,7 @@ class RoomPersonaRepositoryTest {
 
     @Test
     fun `addPersona inserts persona with traits`() = runTest {
-        repo.addPersona("NewPersona", listOf("A", "B"), "New backstory")
+        repo.addPersona("NewPersona", listOf("A", "B"), "New backstory", isPublic = true)
 
         verify(dao).insertCompletePersona(any<PersonaEntity>(), any<List<TraitEntity>>())
     }

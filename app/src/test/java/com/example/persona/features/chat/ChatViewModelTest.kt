@@ -1,8 +1,14 @@
 package com.example.persona.features.chat
 
 import androidx.arch.core.executor.testing.InstantTaskExecutorRule
+import com.example.persona.core.ai.Backend
 import com.example.persona.core.ai.EngineState
-import com.example.persona.data.remote.CloudGenerationException
+import com.example.persona.core.ai.GenerationError
+import com.example.persona.core.ai.GenerationErrorType
+import com.example.persona.core.ai.GenerationEvent
+import com.example.persona.core.ai.GenerationMetrics
+import com.example.persona.core.ai.Route
+import com.example.persona.core.ai.RoutingDecision
 import com.example.persona.data.repository.HybridAiRepository
 import com.example.persona.domain.model.Message
 import com.example.persona.domain.model.MessageStatus
@@ -29,8 +35,8 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.mockito.kotlin.any
+import org.mockito.kotlin.anyOrNull
 import org.mockito.kotlin.doAnswer
-import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.whenever
 
@@ -73,14 +79,11 @@ class ChatViewModelTest {
         val updates = mutableListOf<Pair<String, MessageStatus>>()
         configureBaseMocks(
             stream = flow {
-                emit("partial")
+                emit(delta("partial"))
                 awaitCancellation()
             }
         )
-        doAnswer {
-            updates += it.getArgument<String>(1) to it.getArgument(2)
-            Unit
-        }.whenever(chatRepository).updateMessageContent(any(), any(), any())
+        recordUpdates(updates)
 
         val viewModel = createViewModel()
         viewModel.loadPersonaInfo(persona.id)
@@ -99,16 +102,15 @@ class ChatViewModelTest {
     }
 
     @Test
-    fun `cancelled persistence is retried in non cancellable cleanup`() = runTest {
+    fun `stream cancellation persists partial content as stopped`() = runTest {
         val updates = mutableListOf<Pair<String, MessageStatus>>()
-        var attempts = 0
-        configureBaseMocks(stream = flowOf("partial"))
-        doAnswer {
-            attempts++
-            if (attempts == 1) throw CancellationException("database update cancelled")
-            updates += it.getArgument<String>(1) to it.getArgument(2)
-            Unit
-        }.whenever(chatRepository).updateMessageContent(any(), any(), any())
+        configureBaseMocks(
+            stream = flow {
+                emit(delta("partial"))
+                throw CancellationException("stream cancelled")
+            }
+        )
+        recordUpdates(updates)
 
         val viewModel = createViewModel()
         viewModel.loadPersonaInfo(persona.id)
@@ -117,7 +119,6 @@ class ChatViewModelTest {
         viewModel.sendMessage("hello")
         mainDispatcher.scheduler.advanceUntilIdle()
 
-        assertTrue(attempts >= 2)
         assertEquals("partial", updates.last().first)
         assertEquals(MessageStatus.STOPPED, updates.last().second)
     }
@@ -127,14 +128,17 @@ class ChatViewModelTest {
         val updates = mutableListOf<Pair<String, MessageStatus>>()
         configureBaseMocks(
             stream = flow {
-                emit("partial")
-                throw CloudGenerationException.Network(IllegalStateException("offline"))
+                emit(delta("partial"))
+                emit(
+                    GenerationEvent.Failed(
+                        backend = Backend.CLOUD,
+                        error = GenerationError(GenerationErrorType.NETWORK, "backend offline"),
+                        partialText = "partial"
+                    )
+                )
             }
         )
-        doAnswer {
-            updates += it.getArgument<String>(1) to it.getArgument(2)
-            Unit
-        }.whenever(chatRepository).updateMessageContent(any(), any(), any())
+        recordUpdates(updates)
 
         val viewModel = createViewModel()
         viewModel.loadPersonaInfo(persona.id)
@@ -145,27 +149,35 @@ class ChatViewModelTest {
 
         val (finalContent, finalStatus) = updates.last()
         assertTrue(finalContent.startsWith("partial"))
-        assertTrue(finalContent.contains("[生成失败]"))
-        assertTrue(finalContent.contains("DeepSeek 云端连接失败"))
+        assertTrue(finalContent.contains("backend offline"))
         assertEquals(MessageStatus.FAILED, finalStatus)
     }
 
     @Test
-    fun `cloud fallback failure keeps local partial content and fallback notice`() = runTest {
+    fun `local fallback failure persists local failure then cloud failure`() = runTest {
         val updates = mutableListOf<Pair<String, MessageStatus>>()
         configureBaseMocks(
+            route = Route.LOCAL_THEN_CLOUD,
             stream = flow {
-                emit("partial local")
-                emit("\n\n[本地 AI 生成中断，已切换到云端继续。]\n")
-                throw CloudGenerationException.Network(IllegalStateException("offline"))
+                emit(delta("partial local"))
+                emit(
+                    GenerationEvent.Failed(
+                        backend = Backend.MNN,
+                        error = GenerationError(GenerationErrorType.MODEL_RUNTIME, "native stopped"),
+                        partialText = "partial local"
+                    )
+                )
+                emit(delta("cloud fallback"))
+                emit(
+                    GenerationEvent.Failed(
+                        backend = Backend.CLOUD,
+                        error = GenerationError(GenerationErrorType.NETWORK, "backend offline"),
+                        partialText = "cloud fallback"
+                    )
+                )
             }
         )
-        whenever(hybridRepository.selectModeForGeneration(any(), any()))
-            .thenReturn(HybridAiRepository.Mode.LOCAL)
-        doAnswer {
-            updates += it.getArgument<String>(1) to it.getArgument(2)
-            Unit
-        }.whenever(chatRepository).updateMessageContent(any(), any(), any())
+        recordUpdates(updates)
 
         val viewModel = createViewModel()
         viewModel.loadPersonaInfo(persona.id)
@@ -174,11 +186,12 @@ class ChatViewModelTest {
         viewModel.sendMessage("hello")
         mainDispatcher.scheduler.advanceUntilIdle()
 
-        val (finalContent, finalStatus) = updates.last()
-        assertTrue(finalContent.startsWith("partial local"))
-        assertTrue(finalContent.contains("本地 AI 生成中断"))
-        assertTrue(finalContent.contains("[生成失败]"))
-        assertEquals(MessageStatus.FAILED, finalStatus)
+        assertTrue(updates.size >= 2)
+        assertTrue(
+            updates.any { it.first.contains("partial local") && it.second == MessageStatus.FAILED }
+        )
+        assertTrue(updates.last().first.startsWith("cloud fallback"))
+        assertEquals(MessageStatus.FAILED, updates.last().second)
     }
 
     @Test
@@ -186,22 +199,22 @@ class ChatViewModelTest {
         val errorMessage = Message(
             id = "error-message",
             personaId = persona.id,
-            content = "云端 AI 生成失败",
+            content = "cloud generation failed",
             isFromUser = false,
             status = MessageStatus.FAILED
         )
         val capturedHistories = mutableListOf<List<com.example.persona.core.ai.ChatMessage>>()
         configureBaseMocks(
-            stream = flowOf("reply"),
+            stream = flowOf(delta("reply"), completed()),
             recentMessages = listOf(errorMessage)
         )
         whenever(
             hybridRepository.streamResponse(
-                any(), any(), any(), any(), any()
+                any(), any(), any(), any(), any(), any()
             )
         ).thenAnswer { invocation ->
             capturedHistories += invocation.getArgument<List<com.example.persona.core.ai.ChatMessage>>(4)
-            flowOf("reply")
+            flowOf(delta("reply"), completed())
         }
 
         val viewModel = createViewModel()
@@ -215,21 +228,42 @@ class ChatViewModelTest {
     }
 
     private suspend fun configureBaseMocks(
-        stream: Flow<String>,
-        recentMessages: List<Message> = emptyList()
+        stream: Flow<GenerationEvent>,
+        recentMessages: List<Message> = emptyList(),
+        route: Route = Route.CLOUD
     ) {
         whenever(hybridRepository.initializeLocalModel()).thenReturn(false)
-        whenever(hybridRepository.selectModeForGeneration(any(), any()))
-            .thenReturn(HybridAiRepository.Mode.CLOUD)
+        whenever(
+            hybridRepository.selectRouteForGeneration(any(), any(), any(), any(), anyOrNull(), any())
+        ).thenReturn(RoutingDecision(route, emptyList()))
         whenever(personaRepository.getPersonaById(persona.id)).thenReturn(persona)
+        whenever(chatRepository.saveMessage(any(), any())).thenReturn(Unit)
         whenever(chatRepository.getRecentMessages(any(), any())).thenReturn(recentMessages)
         whenever(chatRepository.getMessagesStream(any())).thenReturn(emptyFlow())
         whenever(
-            hybridRepository.streamResponse(any(), any(), any(), any(), any())
+            hybridRepository.streamResponse(any(), any(), any(), any(), any(), any())
         ).thenReturn(stream)
+    }
+
+    private suspend fun recordUpdates(updates: MutableList<Pair<String, MessageStatus>>) {
+        doAnswer {
+            updates += it.getArgument<String>(1) to it.getArgument(2)
+            Unit
+        }.whenever(chatRepository).updateMessageContent(any(), any(), any())
     }
 
     private fun createViewModel(): ChatViewModel {
         return ChatViewModel(hybridRepository, personaRepository, chatRepository)
     }
+
+    private fun delta(text: String): GenerationEvent = GenerationEvent.Delta(text)
+
+    private fun completed(): GenerationEvent = GenerationEvent.Completed(
+        GenerationMetrics(
+            firstTokenLatencyMs = null,
+            totalLatencyMs = 0L,
+            outputTokens = 0,
+            tokensPerSecond = 0.0
+        )
+    )
 }

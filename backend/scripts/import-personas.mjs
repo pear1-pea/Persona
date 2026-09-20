@@ -35,31 +35,64 @@ try {
     const avatarUrl = normalizeUrl(document.avatarUrl, name, "avatar")
     const postImageUrl = normalizeUrl(document.postImageUrl, id, "post")
     const isPublic = document.isPublic !== false
+    const backstory = String(document.backstory || "").trim()
+    const values = [
+      id,
+      name,
+      avatarUrl,
+      postImageUrl,
+      JSON.stringify(traits),
+      backstory,
+      creatorId,
+      isPublic
+    ]
 
-    await client.query(
-      `INSERT INTO personas
-        (id, name, avatar_url, post_image_url, traits, backstory, creator_id, is_public)
-       VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)
-       ON CONFLICT (id) DO UPDATE SET
-         name = EXCLUDED.name,
-         avatar_url = EXCLUDED.avatar_url,
-         post_image_url = EXCLUDED.post_image_url,
-         traits = EXCLUDED.traits,
-         backstory = EXCLUDED.backstory,
-         creator_id = EXCLUDED.creator_id,
-         is_public = EXCLUDED.is_public,
-         updated_at = NOW()`,
-      [
-        id,
-        name,
-        avatarUrl,
-        postImageUrl,
-        JSON.stringify(traits),
-        String(document.backstory || "").trim(),
-        creatorId,
-        isPublic
-      ]
-    )
+    let targetId = (await client.query(
+      "SELECT id FROM personas WHERE id = $1",
+      [id]
+    )).rowCount > 0 ? id : null
+
+    if (!targetId && creatorId === "system") {
+      const legacy = await client.query(
+        `SELECT id FROM personas
+         WHERE creator_id = $1 AND name = $2
+         ORDER BY created_at ASC
+         LIMIT 1`,
+        [creatorId, name]
+      )
+      targetId = legacy.rows[0]?.id ?? null
+    }
+
+    if (targetId) {
+      await client.query(
+        `UPDATE personas SET
+           id = $1,
+           name = $2,
+           avatar_url = $3,
+           post_image_url = $4,
+           traits = $5::jsonb,
+           backstory = $6,
+           creator_id = $7,
+           is_public = $8,
+           updated_at = NOW()
+         WHERE id = $9`,
+        [...values, targetId]
+      )
+
+      if (creatorId === "system") {
+        await client.query(
+          "DELETE FROM personas WHERE creator_id = $1 AND name = $2 AND id <> $3",
+          [creatorId, name, id]
+        )
+      }
+    } else {
+      await client.query(
+        `INSERT INTO personas
+           (id, name, avatar_url, post_image_url, traits, backstory, creator_id, is_public)
+         VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)`,
+        values
+      )
+    }
   }
   await client.query("COMMIT")
   console.log(`Imported ${documents.length} personas`)

@@ -7,6 +7,7 @@ import androidx.paging.map
 import com.example.persona.data.local.dao.MessageDao
 import com.example.persona.data.mapper.toDomain
 import com.example.persona.data.mapper.toEntity
+import com.example.persona.data.mapper.toTraitEntities
 import com.example.persona.domain.model.Message
 import com.example.persona.domain.model.MessageStatus
 import com.example.persona.domain.model.Persona
@@ -44,9 +45,12 @@ class RoomChatRepository @Inject constructor(
             .map { it.toDomain() }
     }
 
-    @Suppress("UNUSED_PARAMETER")
     override suspend fun saveMessage(message: Message, persona: Persona) {
-        messageDao.insertMessage(message.toEntity(ownerId))
+        messageDao.insertPersonaAndMessage(
+            persona = persona.toEntity(),
+            traits = persona.toTraitEntities(),
+            message = message.toEntity(ownerId)
+        )
     }
 
     override suspend fun updateMessageContent(id: String, content: String, status: MessageStatus) {

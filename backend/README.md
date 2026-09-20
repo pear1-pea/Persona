@@ -40,17 +40,17 @@ psql "$DATABASE_URL" -f schema.sql
 本地启动：
 
 ```bash
-npm install
+npm ci
 npm run dev
 ```
 
 从旧 Firestore 导出 JSON 后导入：
 
 ```bash
-node scripts/import-personas.mjs ./personas.json
+node scripts/import-personas.mjs ./seed-personas.json
 ```
 
-输入可以是 Persona 数组，也可以是 `{ "personas": [] }`。每条记录至少需要 `id`、`name`、`creatorId`；`isPublic` 缺失时按公开处理，适用于你已经确认的旧公开 Persona。脚本使用事务和 `id` upsert，重复执行不会重复创建。导入完成后抽查 `creator_id`、`is_public`、traits 数组以及图片 URL，再切换 Android 的 Backend 地址。
+输入可以是 Persona 数组，也可以是 `{ "personas": [] }`。每条记录至少需要 `id`、`name`、`creatorId`；`isPublic` 缺失时按公开处理，适用于你已经确认的旧公开 Persona。脚本使用事务和稳定 `id`；如果 system Persona 仍是旧随机 ID，会按 `creator_id + name` 升级为种子文件中的固定 ID，并清理同名旧 system 记录，因此重复执行不会重复创建。导入完成后抽查 `creator_id`、`is_public`、traits 数组以及图片 URL，再切换 Android 的 Backend 地址。
 
 旧 Authing 用户需要先在新系统重新注册，再由管理员绑定旧 `creatorId`：
 

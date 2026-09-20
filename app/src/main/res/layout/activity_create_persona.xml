@@ -1,11 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<androidx.core.widget.NestedScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/app_background"
-    android:orientation="vertical"
-    android:padding="24dp">
+    android:fillViewport="true"
+    android:clipToPadding="false">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="24dp">
 
         <TextView
             android:layout_width="wrap_content"
@@ -81,8 +87,7 @@
         <!-- Background story -->
         <com.google.android.material.textfield.TextInputLayout
             android:layout_width="match_parent"
-            android:layout_height="0dp"
-            android:layout_weight="1"
+            android:layout_height="180dp"
             android:layout_marginTop="24dp"
             android:hint="Background Story"
             app:boxBackgroundColor="@color/card_background"
@@ -91,7 +96,11 @@
             <com.google.android.material.textfield.TextInputEditText
                 android:id="@+id/etBackstory"
                 android:layout_width="match_parent"
-                android:layout_height="match_parent" android:gravity="top"
+                android:layout_height="match_parent"
+                android:gravity="top|start"
+                android:inputType="textCapSentences|textMultiLine"
+                android:maxLines="8"
+                android:minLines="5"
                 android:textColor="@color/text_primary"
                 android:scrollbars="vertical"/>
         </com.google.android.material.textfield.TextInputLayout>
@@ -105,10 +114,11 @@
             android:text="公开 Persona"
             android:textColor="@color/text_primary" />
 
-        <!-- Two buttons -->
-        <androidx.constraintlayout.widget.ConstraintLayout android:layout_width="match_parent"
+        <!-- Actions -->
+        <androidx.constraintlayout.widget.ConstraintLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="32dp">
+            android:layout_marginTop="24dp">
 
             <ProgressBar
                 android:id="@+id/progressBarHorizontal"
@@ -127,7 +137,8 @@
                 android:id="@+id/btnAiGenerate"
                 android:layout_width="match_parent"
                 android:layout_height="60dp"
-                android:layout_marginTop="16dp" android:text="✨ AI Auto-Generate"
+                android:layout_marginTop="16dp"
+                android:text="✨ AI Auto-Generate"
                 android:backgroundTint="@color/accent_cyan"
                 android:textColor="@color/app_background"
                 android:textStyle="bold"
@@ -158,4 +169,7 @@
                 app:layout_constraintStart_toStartOf="parent"
                 app:layout_constraintEnd_toEndOf="parent" />
         </androidx.constraintlayout.widget.ConstraintLayout>
-</LinearLayout>
+
+    </LinearLayout>
+
+</androidx.core.widget.NestedScrollView>

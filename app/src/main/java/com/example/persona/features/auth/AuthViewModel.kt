@@ -34,7 +34,7 @@ class AuthViewModel @Inject constructor(
             onError = { error -> emitError(error.messageForAuth("登录失败")) }
         ).also {
             it.invokeOnCompletion { _isSubmitting.value = false }
-        )
+        }
     }
 
     fun signUp(email: String, password: String) {
@@ -48,7 +48,7 @@ class AuthViewModel @Inject constructor(
             onError = { error -> emitError(error.messageForAuth("注册失败")) }
         ).also {
             it.invokeOnCompletion { _isSubmitting.value = false }
-        )
+        }
     }
 
     fun logout() = authManager.logout()

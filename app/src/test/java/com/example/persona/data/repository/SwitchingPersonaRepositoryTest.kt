@@ -1,7 +1,9 @@
 package com.example.persona.data.repository
 
+import com.example.persona.core.auth.AuthManager
 import com.example.persona.domain.model.Persona
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.flow.MutableStateFlow
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Before
@@ -13,13 +15,16 @@ import org.mockito.kotlin.whenever
 class SwitchingPersonaRepositoryTest {
 
     private val roomImpl: RoomPersonaRepository = mock()
+    private val remoteImpl: RemotePersonaRepository = mock()
+    private val authManager: AuthManager = mock()
     private lateinit var repo: SwitchingPersonaRepository
 
     private val roomPersona = Persona("r1", "Room", "", "", listOf("B"), "from room", "me")
 
     @Before
     fun setUp() {
-        repo = SwitchingPersonaRepository(roomImpl)
+        whenever(authManager.isLoggedIn).thenReturn(MutableStateFlow(false))
+        repo = SwitchingPersonaRepository(roomImpl, remoteImpl, authManager)
     }
 
     @Test
@@ -34,19 +39,19 @@ class SwitchingPersonaRepositoryTest {
 
     @Test
     fun `addPersona delegates to room`() = runTest {
-        repo.addPersona("Test", listOf("T"), "Test backstory")
+        repo.addPersona("Test", listOf("T"), "Test backstory", isPublic = true)
 
-        verify(roomImpl).addPersona("Test", listOf("T"), "Test backstory")
+        verify(roomImpl).addPersona("Test", listOf("T"), "Test backstory", true)
     }
 
     @Test
     fun `getPersonas delegates to room`() = runTest {
-        whenever(roomImpl.getPersonas()).thenReturn(listOf(roomPersona))
+        whenever(roomImpl.getPublicSeedPersonas()).thenReturn(listOf(roomPersona))
 
         val result = repo.getPersonas()
 
         assertEquals(listOf(roomPersona), result)
-        verify(roomImpl).getPersonas()
+        verify(roomImpl).getPublicSeedPersonas()
     }
 
     @Test

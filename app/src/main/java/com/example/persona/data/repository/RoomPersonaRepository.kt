@@ -38,7 +38,8 @@ class RoomPersonaRepository @Inject constructor(
             postImageUrl = "https://picsum.photos/seed/$newId/800/600",
             traits = traits,
             backstory = backstory,
-            creatorId = currentUserId
+            creatorId = currentUserId,
+            isPublic = isPublic
         )
         dao.insertCompletePersona(newPersona.toEntity(), newPersona.toTraitEntities())
     }

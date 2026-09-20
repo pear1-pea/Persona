@@ -3,6 +3,7 @@ package com.example.persona.data.remote
 import com.example.persona.data.remote.dto.AuthCredentials
 import com.example.persona.data.remote.dto.AuthSessionInfoDto
 import com.example.persona.data.remote.dto.AuthSessionDto
+import com.example.persona.data.remote.dto.AuthUserDto
 import com.example.persona.data.remote.dto.ChangePasswordRequest
 import com.example.persona.data.remote.dto.DeleteAccountRequest
 import retrofit2.http.Body

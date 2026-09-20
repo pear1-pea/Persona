@@ -1,15 +1,19 @@
 package com.example.persona.data.repository
 
+import com.example.persona.core.ai.Backend
+import com.example.persona.core.ai.GenerationErrorType
+import com.example.persona.core.ai.GenerationEvent
+import com.example.persona.core.auth.AuthTokenProvider
+import com.example.persona.data.remote.BackendConfig
+import com.example.persona.data.remote.CloudChatApi
 import com.example.persona.data.remote.CloudGenerationException
-import com.example.persona.data.remote.DeepSeekApi
-import com.example.persona.data.remote.DeepSeekConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
@@ -29,28 +33,38 @@ import java.util.concurrent.TimeUnit
 @kotlinx.coroutines.ExperimentalCoroutinesApi
 class CloudChatRepositoryTest {
 
-    private val api: DeepSeekApi = mock()
+    private val api: CloudChatApi = mock()
+    private val authTokenProvider: AuthTokenProvider = mock()
     private lateinit var repo: CloudChatRepository
 
     @Before
     fun setUp() {
-        repo = CloudChatRepository(api, DeepSeekConfig("sk-test", "deepseek-v4-flash"))
+        whenever(authTokenProvider.currentToken()).thenReturn("test-token")
+        repo = CloudChatRepository(
+            api,
+            BackendConfig("https://example.test", "deepseek-v4-flash"),
+            authTokenProvider
+        )
     }
 
     @Test
-    fun `streamResponse fails with NotConfigured when api key is blank`() = runTest {
-        val unconfiguredRepo = CloudChatRepository(api, DeepSeekConfig("", "deepseek-v4-flash"))
+    fun `streamResponse emits NotConfigured failure when backend is not configured`() = runTest {
+        val unconfiguredRepo = CloudChatRepository(
+            api,
+            BackendConfig("", "", isConfigured = false),
+            authTokenProvider
+        )
 
-        val thrown = runCatching {
-            unconfiguredRepo.streamResponse("system", "user").toList()
-        }.exceptionOrNull()
+        val events = unconfiguredRepo.streamResponse("system", "user").toList()
 
-        assertTrue(thrown is CloudGenerationException.NotConfigured)
+        val failure = events.single() as GenerationEvent.Failed
+        assertEquals(Backend.CLOUD, failure.backend)
+        assertEquals(GenerationErrorType.NOT_CONFIGURED, failure.error.type)
         verify(api, never()).streamChat(any())
     }
 
     @Test
-    fun `streamResponse fails with Network when execute throws`() = runTest {
+    fun `streamResponse emits Network failure when request fails`() = runTest {
         val call: retrofit2.Call<okhttp3.ResponseBody> = mock()
         val cause = RuntimeException("Network error")
         whenever(api.streamChat(any())).thenReturn(call)
@@ -59,18 +73,15 @@ class CloudChatRepositoryTest {
             Unit
         }
 
-        val thrown = runCatching {
-            repo.streamResponse("system", "user").toList()
-        }.exceptionOrNull()
+        val events = repo.streamResponse("system", "user").toList()
 
-        assertTrue(thrown is CloudGenerationException.Network)
-        // Coroutine stacktrace recovery copies the exception, so the original
-        // cause can sit deeper than one level down.
-        assertTrue(generateSequence(thrown) { it.cause }.any { it === cause })
+        val failure = events.single() as GenerationEvent.Failed
+        assertEquals(GenerationErrorType.NETWORK, failure.error.type)
+        assertTrue(generateSequence(failure.error.cause) { it?.cause }.any { it === cause })
     }
 
     @Test
-    fun `streamResponse propagates cancellation when execute is cancelled`() = runTest {
+    fun `streamResponse propagates cancellation when request is cancelled`() = runTest {
         val call: retrofit2.Call<okhttp3.ResponseBody> = mock()
         whenever(api.streamChat(any())).thenReturn(call)
         whenever(call.enqueue(any())).thenAnswer {
@@ -110,10 +121,10 @@ class CloudChatRepositoryTest {
     }
 
     @Test
-    fun `streamResponse emits SSE content and stops at done marker`() = runTest {
+    fun `streamResponse emits SSE content and completion`() = runTest {
         val call: retrofit2.Call<okhttp3.ResponseBody> = mock()
         val body = """
-            data: {"choices":[{"delta":{"content":"你好"}}]}
+            data: {"choices":[{"delta":{"content":"\u4f60\u597d"}}]}
 
             data: [DONE]
         """.trimIndent().toResponseBody("text/event-stream".toMediaTypeOrNull())
@@ -124,14 +135,14 @@ class CloudChatRepositoryTest {
             Unit
         }
 
-        assertEquals(
-            listOf("你好"),
-            repo.streamResponse("system", "user").toList()
-        )
+        val events = repo.streamResponse("system", "user").toList()
+
+        assertEquals(GenerationEvent.Delta("\u4f60\u597d"), events.first())
+        assertTrue(events.last() is GenerationEvent.Completed)
     }
 
     @Test
-    fun `streamResponse fails with HttpError when response is unsuccessful`() = runTest {
+    fun `streamResponse emits HttpError failure when response is unsuccessful`() = runTest {
         val call: retrofit2.Call<okhttp3.ResponseBody> = mock()
         val body = "nope".toResponseBody("text/plain".toMediaTypeOrNull())
         whenever(api.streamChat(any())).thenReturn(call)
@@ -141,11 +152,11 @@ class CloudChatRepositoryTest {
             Unit
         }
 
-        val thrown = runCatching {
-            repo.streamResponse("system", "user").toList()
-        }.exceptionOrNull()
+        val events = repo.streamResponse("system", "user").toList()
 
-        assertTrue(thrown is CloudGenerationException.HttpError)
-        assertEquals(402, (thrown as CloudGenerationException.HttpError).code)
+        val failure = events.single() as GenerationEvent.Failed
+        assertEquals(GenerationErrorType.HTTP, failure.error.type)
+        val cause = failure.error.cause as CloudGenerationException.HttpError
+        assertEquals(402, cause.code)
     }
 }
