@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "id": "minimal-mnn-fixture",
+  "name": "Minimal MNN fixture",
+  "version": "1.0.0",
+  "backend": "MNN",
+  "family": "QWEN2_5",
+  "promptFormat": "QWEN_CHATML_TEXT",
+  "entry": "llm.mnn",
+  "tokenizer": "tokenizer.txt",
+  "contextWindow": 4096,
+  "minRamGb": 0,
+  "minSdk": 24,
+  "requiredAbis": [
+    "arm64-v8a"
+  ],
+  "files": [
+    {
+      "path": "README.md",
+      "role": "file",
+      "size": 534,
+      "sha256": "b470b3b594a7fb8128deb4b46f02a87be54d94d79accefe93db10babc3cac7e9"
+    },
+    {
+      "path": "config.json",
+      "role": "config",
+      "size": 63,
+      "sha256": "c16fd1bbc16d98f9091f90ed2a1934a35312c74a141b23ff5abe278671cb4f58"
+    },
+    {
+      "path": "llm.mnn",
+      "role": "model",
+      "size": 14,
+      "sha256": "2ec14c2eccd4ac5823689936809127a73e5ae3afdc1df5e791a918585f1c23cd"
+    },
+    {
+      "path": "llm.mnn.weight",
+      "role": "weight",
+      "size": 15,
+      "sha256": "d53d7ab85e0ee1aa4b13b47de46b1d51cde62e7aebb6bd4e4b555b908cf84dcb"
+    },
+    {
+      "path": "tokenizer.txt",
+      "role": "tokenizer",
+      "size": 18,
+      "sha256": "9fe06afd3ec14eb5114c48847a96de2de607a8e4b478a2486abf3e06b5ef1147"
+    }
+  ],
+  "signature": null
+}

@@ -1,0 +1,3 @@
+# Model fixtures contain SHA-256 manifests. Git must not rewrite their bytes
+# (for example CRLF conversion on Windows), or the hashes stop matching.
+tools/model-packager/examples/** -text

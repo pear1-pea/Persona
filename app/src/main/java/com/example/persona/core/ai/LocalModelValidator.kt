@@ -1,7 +1,5 @@
 package com.example.persona.core.ai
 
-import android.system.Os
-import android.system.OsConstants
 import com.google.gson.Gson
 import java.io.File
 import java.security.MessageDigest
@@ -10,7 +8,9 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
-class LocalModelValidator @Inject constructor() {
+class LocalModelValidator @Inject constructor(
+    private val symlinkChecker: SymlinkChecker
+) {
     private val gson = Gson()
 
     fun validate(
@@ -21,7 +21,7 @@ class LocalModelValidator @Inject constructor() {
     ): ModelScanReport {
         val scannedAtMillis = System.currentTimeMillis()
         val canonicalModelDir = runCatching { modelDir.canonicalFile }.getOrElse { modelDir }
-        val manifestFile = if (modelDir.isSymbolicLink()) {
+        val manifestFile = if (symlinkChecker.isSymbolicLink(modelDir)) {
             null
         } else {
             canonicalModelDir.resolveSafe(MANIFEST_FILE)
@@ -58,12 +58,12 @@ class LocalModelValidator @Inject constructor() {
         requireReadyMarker: Boolean,
         recentFailureCount: (String) -> Int
     ): ModelScanResult {
-        if (modelDir.isSymbolicLink()) {
+        if (symlinkChecker.isSymbolicLink(modelDir)) {
             return ModelScanResult.Corrupted("模型目录不能是 symbolic link")
         }
         val root = modelDir.canonicalFile
         if (!root.isDirectory) return ModelScanResult.NotInstalled
-        if (root.walkTopDown().any { it != root && it.isSymbolicLink() }) {
+        if (root.walkTopDown().any { it != root && symlinkChecker.isSymbolicLink(it) }) {
             return ModelScanResult.Corrupted("模型目录不能包含 symbolic link")
         }
         val safeManifestFile = root.resolveSafe(MANIFEST_FILE)
@@ -282,7 +282,7 @@ class LocalModelValidator @Inject constructor() {
     private fun File.resolveSafe(relativePath: String): File? {
         val root = canonicalFile
         val candidate = File(root, relativePath)
-        if (candidate.pathComponents().any { it.isSymbolicLink() }) return null
+        if (candidate.pathComponents().any { symlinkChecker.isSymbolicLink(it) }) return null
         val canonical = runCatching { candidate.canonicalFile }.getOrNull() ?: return null
         val rootPath = root.path + File.separator
         if (!canonical.path.startsWith(rootPath)) return null
@@ -298,13 +298,6 @@ class LocalModelValidator @Inject constructor() {
             current = current.parentFile
         }
         return components
-    }
-
-    private fun File.isSymbolicLink(): Boolean {
-        return runCatching {
-            val mode = Os.lstat(path).st_mode
-            mode and OsConstants.S_IFMT == OsConstants.S_IFLNK
-        }.getOrDefault(false)
     }
 
     private fun File.sha256(): String {

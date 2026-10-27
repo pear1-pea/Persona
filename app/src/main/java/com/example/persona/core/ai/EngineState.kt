@@ -4,5 +4,8 @@ sealed interface EngineState {
     data object Idle : EngineState
     data object Initializing : EngineState
     data object Ready : EngineState
-    data class Error(val reason: String) : EngineState
+    data class Error(
+        val reason: String,
+        val type: LocalModelFailureType = LocalModelFailureType.UNKNOWN
+    ) : EngineState
 }

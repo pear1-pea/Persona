@@ -5,11 +5,13 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.persona.core.ai.DeviceCapability
 import com.example.persona.core.ai.InstalledModel
+import com.example.persona.core.ai.LocalModelFailureType
 import com.example.persona.core.ai.LocalModelManager
 import com.example.persona.core.ai.ModelAdmission
 import com.example.persona.core.ai.ModelPackageInstallResult
 import com.example.persona.core.ai.ModelScanReport
 import com.example.persona.core.ai.ModelScanResult
+import com.example.persona.data.repository.HybridAiRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -68,7 +70,8 @@ data class ModelManagementUiState(
 
 @HiltViewModel
 class ModelManagementViewModel @Inject constructor(
-    private val localModelManager: LocalModelManager
+    private val localModelManager: LocalModelManager,
+    private val hybridAiRepository: HybridAiRepository
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(ModelManagementUiState())
@@ -128,12 +131,21 @@ class ModelManagementViewModel @Inject constructor(
     fun deleteModel(item: ModelUiItem) {
         viewModelScope.launch {
             _state.value = _state.value.copy(isLoading = true, message = "正在删除模型...")
-            val deleted = localModelManager.deleteModel(item.modelDir)
+            val prepared = hybridAiRepository.prepareModelForDeletion(item.modelDir)
+            if (!prepared) {
+                loadModels("删除失败：无法停止或释放本地模型")
+                return@launch
+            }
+            val deleted = try {
+                localModelManager.deleteModel(item.modelDir)
+            } finally {
+                hybridAiRepository.finishModelDeletion()
+            }
             loadModels(
                 if (deleted) {
                     "已删除模型目录：" + item.directoryName
                 } else {
-                    "删除失败：目录不存在或不在 App models 目录下"
+                    "删除失败：模型仍在使用、目录不存在或不在 App models 目录下"
                 }
             )
         }
@@ -238,10 +250,14 @@ class ModelManagementViewModel @Inject constructor(
         val contextWindow = readyModel?.contextWindow?.toString() ?: "-"
         val minRamGb = readyModel?.minRamGb ?: 0
         val admissionReasons = admission?.reasons.orEmpty()
-        val riskText = when {
-            admission?.status == ModelAdmission.RISKY -> admissionReasons.joinToString("；")
-            else -> readyModel?.memoryRiskText(capability)
-        }
+        val riskText = buildList {
+            if (admission?.status == ModelAdmission.RISKY) {
+                add(admissionReasons.joinToString("；"))
+            } else {
+                readyModel?.memoryRiskText(capability)?.let { add(it) }
+            }
+            failureRiskText(readyModel)?.let { add(it) }
+        }.joinToString("；").takeIf { it.isNotBlank() }
         val manifestText = manifestRaw?.trim()?.takeIf(String::isNotEmpty) ?: "未读取到 manifest.json"
         val item = ModelUiItem(
             directoryName = directoryName,
@@ -317,6 +333,18 @@ class ModelManagementViewModel @Inject constructor(
             else -> "推荐：云端兜底。当前 RAM 低于 4GB，不建议直接跑本地大模型。"
         }
         return deviceText + "\n" + recommendationText
+    }
+
+    private fun failureRiskText(model: InstalledModel?): String? {
+        val failure = model?.let { localModelManager.recentFailure(it.id) } ?: return null
+        return when (failure.type) {
+            LocalModelFailureType.CORRUPT,
+            LocalModelFailureType.INCOMPATIBLE -> "最近失败：模型损坏或不兼容，请重新安装或重新选择"
+            LocalModelFailureType.OUT_OF_MEMORY -> "最近失败：内存不足，可稍后重试或切换更小模型"
+            LocalModelFailureType.THERMAL -> "最近失败：设备过热，降温后重试"
+            LocalModelFailureType.USER_CANCELLED -> null
+            else -> "最近失败：临时错误，可稍后重试"
+        }
     }
 
     private fun InstalledModel.memoryRiskText(capability: DeviceCapability): String? {

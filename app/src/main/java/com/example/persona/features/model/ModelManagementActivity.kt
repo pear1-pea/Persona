@@ -93,7 +93,7 @@ class ModelManagementActivity : AppCompatActivity() {
     private fun confirmDelete(item: ModelUiItem) {
         AlertDialog.Builder(this)
             .setTitle("删除模型？")
-            .setMessage("将删除模型目录：\n" + item.modelDir + "\n\n如果这是当前模型，只会清空 currentModel，不会由 UI 直接释放 AI 引擎。")
+            .setMessage("将删除模型目录：\n" + item.modelDir + "\n\n如果这是当前模型，会先停止生成并释放本地引擎，再删除目录。")
             .setNegativeButton("取消", null)
             .setPositiveButton("删除") { _, _ ->
                 viewModel.deleteModel(item)

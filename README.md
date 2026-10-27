@@ -76,11 +76,34 @@ Persona 数据源策略：登录状态下 Backend 是权威源，离线状态下
 
 - 验证流程：下载 `taobao-mnn/Qwen2.5-0.5B-Instruct-MNN`。
 - 体验效果：下载 `taobao-mnn/Qwen2.5-1.5B-Instruct-MNN`。
-- 安装并运行 App 一次，让系统创建 App 专属目录。
-- 使用 Android Studio 的 **Device File Explorer**，将完整模型目录放到：
-  `/storage/emulated/0/Android/data/com.example.persona/files/models/qwen2.5-0.5b-instruct-mnn/`
-- 确保 `config.json` 直接位于该目录下，旁边保留模型包自带的 `.mnn`、权重和 tokenizer 文件。
-- 在 App 内进入 **Profile > Settings > 本地模型管理**，检查本地模型是否被识别。
+- **生成 manifest**（MNN 包本身不带 `manifest.json`，直接复制会被校验器拒绝）：
+
+```bash
+python3 tools/model-packager/generate_manifest.py \
+  /path/to/Qwen2.5-0.5B-Instruct-MNN \
+  --id qwen2.5-0.5b-instruct-mnn \
+  --name "Qwen2.5 0.5B Instruct" \
+  --context-window 32768 \
+  --min-ram-gb 4
+```
+
+  该命令会计算每个文件的 size/SHA-256，写入 `manifest.json` 和 `READY`。详细说明见
+  [`tools/model-packager/README.md`](tools/model-packager/README.md)。
+
+- 可选校验：
+
+```bash
+python3 tools/model-packager/validate_package.py \
+  /path/to/Qwen2.5-0.5B-Instruct-MNN --require-ready
+```
+
+- 安装方式二选一：
+  - **推荐**：在 App 内进入 **Profile > Settings > 本地模型管理 > 安装模型**，选择整个模型目录；App 会复制到 staging、校验、写 `READY` 并原子落盘。
+  - 手动：把**整个目录**（包括 `manifest.json`、`READY`）放到
+    `/storage/emulated/0/Android/data/com.example.persona/files/models/qwen2.5-0.5b-instruct-mnn/`。
+- 回到 App 的模型管理页刷新，确认状态为 Ready，并完成 smoke test。
+
+注意：只复制 `config.json` 和 `.mnn` 文件是不够的；缺少 `manifest.json` 或 `READY` 会显示 `NotInstalled`。
 
 ### 4. 运行
 
@@ -109,3 +132,12 @@ Sync Gradle 并运行 App。当前项目固定使用 NDK `27.0.11718014`；如�
 
   - 引入端侧向量数据库（Vector DB），对历史对话进行 Embedding 存储。
   - 利用 **RAG (检索增强生成)**  技术，让 Persona 能够“回想起”很久以前的对话细节，建立真正的情感连接。
+
+## 📚 文档
+
+- [AGENTS.md](AGENTS.md) — agent 入口与文档索引（`CLAUDE.md` 通过 `@AGENTS.md` 引用同一份内容）
+- [docs/index.md](docs/index.md) — 全部文档导航
+- [架构](docs/agent/architecture.md) — 分层、AI 链路、数据源
+- [约定](docs/agent/conventions.md) — Kotlin/Android 风格与安全规则
+- [构建](docs/agent/build.md) — 工具链、NDK、本地配置
+- [测试](docs/agent/testing.md) — 单元测试与后端 smoke
