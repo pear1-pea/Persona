@@ -1,9 +1,21 @@
 import "dotenv/config"
 import { createServer, IncomingMessage, ServerResponse } from "node:http"
-import { createHash, randomBytes, randomUUID } from "node:crypto"
+import { randomUUID } from "node:crypto"
 import argon2 from "argon2"
 import { Pool, type QueryResultRow } from "pg"
 import { z } from "zod"
+import {
+  authSchema,
+  changePasswordSchema,
+  chatSchema,
+  createPersonaSchema,
+  deleteAccountSchema,
+  personaIdSchema,
+  sessionIdSchema,
+  updatePersonaSchema
+} from "./validation.js"
+import { createSessionToken, hashSessionToken, normalizeEmail } from "./security.js"
+import { personaDto } from "./dto.js"
 
 const port = Number(process.env.PORT ?? 8080)
 const databaseUrl = requiredEnv("DATABASE_URL")
@@ -12,8 +24,6 @@ const deepSeekBaseUrl = (process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.
 const deepSeekModelId = process.env.DEEPSEEK_MODEL_ID ?? "deepseek-v4-flash"
 const maxRequestsPerMinute = Number(process.env.MAX_REQUESTS_PER_MINUTE ?? 30)
 const maxAuthRequestsPerMinute = Number(process.env.MAX_AUTH_REQUESTS_PER_MINUTE ?? 10)
-const maxMessages = Number(process.env.MAX_MESSAGES ?? 24)
-const maxMessageChars = Number(process.env.MAX_MESSAGE_CHARS ?? 12000)
 const maxOutputTokens = Number(process.env.MAX_OUTPUT_TOKENS ?? 1024)
 const maxDailyInputChars = Number(process.env.MAX_DAILY_INPUT_CHARS ?? 200_000)
 const maxDailyOutputTokens = Number(process.env.MAX_DAILY_OUTPUT_TOKENS ?? 30_000)
@@ -35,43 +45,6 @@ setInterval(() => {
     .catch(() => undefined)
 }, 60_000).unref()
 
-const createPersonaSchema = z.object({
-    name: z.string().trim().min(1).max(120),
-    traits: z.array(z.string().trim().min(1).max(80)).max(20),
-    backstory: z.string().trim().min(1).max(12000),
-    isPublic: z.boolean().default(true)
-}).strict()
-
-const updatePersonaSchema = createPersonaSchema
-
-const authSchema = z.object({
-  email: z.string().trim().toLowerCase().email().max(320),
-  password: z.string().min(8).max(256)
-}).strict()
-
-const changePasswordSchema = z.object({
-  currentPassword: z.string().min(8).max(256),
-  newPassword: z.string().min(8).max(256)
-}).strict()
-
-const deleteAccountSchema = z.object({
-  currentPassword: z.string().min(8).max(256)
-}).strict()
-
-const chatSchema = z.object({
-  model: z.string().trim().min(1).max(100),
-  messages: z.array(z.object({
-    role: z.enum(["system", "user", "assistant"]),
-    content: z.string().max(maxMessageChars)
-  }).strict()).min(1).max(maxMessages),
-  stream: z.literal(true),
-  temperature: z.number().min(0).max(2).optional(),
-  top_p: z.number().min(0).max(1).optional(),
-  thinking: z.object({ type: z.string().max(40) }).optional()
-}).strict()
-const personaIdSchema = z.string().uuid()
-const sessionIdSchema = z.string().uuid()
-
 type AccountUser = QueryResultRow & {
   id: string
   email: string
@@ -86,18 +59,6 @@ type RateLimitRow = QueryResultRow & { request_count: number }
 type UsageRow = QueryResultRow & { usage_amount: number }
 
 const dummyPasswordHash = await argon2.hash("persona-invalid-password", { type: argon2.argon2id })
-
-function normalizeEmail(email: string): string {
-  return email.trim().toLowerCase()
-}
-
-function hashSessionToken(token: string): Buffer {
-  return createHash("sha256").update(token, "utf8").digest()
-}
-
-function createSessionToken(): string {
-  return randomBytes(32).toString("base64url")
-}
 
 function sessionExpiry(): Date {
   return new Date(Date.now() + sessionTtlDays * 24 * 60 * 60 * 1000)
@@ -445,19 +406,6 @@ function writeJson(response: ServerResponse, status: number, body: unknown): voi
 
 function httpError(status: number, code: string): Error & { status: number; code: string } {
   return Object.assign(new Error(code), { status, code })
-}
-
-function personaDto(row: Record<string, unknown>): Record<string, unknown> {
-  return {
-    id: row.id,
-    name: row.name,
-    avatarUrl: row.avatar_url,
-    postImageUrl: row.post_image_url,
-    traits: row.traits,
-    backstory: row.backstory,
-    creatorId: row.creator_id,
-    isPublic: row.is_public
-  }
 }
 
 async function handlePersonaList(response: ServerResponse, mine: boolean, user: SessionUser | null): Promise<void> {

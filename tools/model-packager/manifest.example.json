@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "id": "replace-with-model-id",
+  "name": "Replace with model name",
+  "version": "1.0.0",
+  "backend": "MNN",
+  "family": "QWEN2_5",
+  "promptFormat": "QWEN_CHATML_TEXT",
+  "entry": "llm.mnn",
+  "tokenizer": "tokenizer.txt",
+  "contextWindow": 32768,
+  "minRamGb": 4,
+  "minSdk": 24,
+  "requiredAbis": [
+    "arm64-v8a"
+  ],
+  "files": [
+    {
+      "path": "config.json",
+      "role": "config",
+      "size": 0,
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "path": "llm.mnn",
+      "role": "model",
+      "size": 0,
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ],
+  "signature": null
+}

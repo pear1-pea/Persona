@@ -91,13 +91,10 @@ class LocalModelManager @Inject constructor(
 
     suspend fun deleteModel(modelDir: String): Boolean = withContext(Dispatchers.IO) {
         val target = resolveManagedModelDirectory(modelDir) ?: return@withContext false
-        val deleted = !target.exists() || target.deleteRecursively()
-        if (deleted && currentModelMatches(target)) {
-            _currentModel.value = null
-            _currentAdmission.value = null
-            clearCurrentModelPreference()
-        }
-        deleted
+        // The runtime must be deactivated first. Refusing here prevents a direct
+        // caller from deleting files under a live mmap/session.
+        if (currentModelMatches(target)) return@withContext false
+        !target.exists() || target.deleteRecursively()
     }
 
     suspend fun installModelFromTree(uri: Uri): ModelPackageInstallResult {
@@ -111,7 +108,12 @@ class LocalModelManager @Inject constructor(
         }
     }
 
-    fun recordLocalLoadFailure(model: InstalledModel, error: Throwable? = null) {
+    fun recordLocalLoadFailure(
+        model: InstalledModel,
+        error: Throwable? = null,
+        type: LocalModelFailureType = LocalModelFailureType.UNKNOWN
+    ) {
+        if (type == LocalModelFailureType.USER_CANCELLED) return
         val key = failureKey(model.id)
         val now = System.currentTimeMillis()
         val previousFailureAt = preferences.getLong(failureTimeKey(model.id), 0L)
@@ -125,34 +127,37 @@ class LocalModelManager @Inject constructor(
         preferences.edit()
             .putInt(key, (previous + 1).coerceAtMost(MAX_RECORDED_FAILURES))
             .putLong(failureTimeKey(model.id), now)
+            .putString(failureTypeKey(model.id), type.name)
             .putString(failureProfileKey(model.id), deviceCapability().toDiagnosticText())
             .putString(failureMessageKey(model.id), error?.message.orEmpty())
             .apply()
     }
 
     fun recordLocalLoadSuccess(model: InstalledModel) {
-        preferences.edit()
-            .remove(failureKey(model.id))
-            .remove(failureTimeKey(model.id))
-            .remove(failureProfileKey(model.id))
-            .remove(failureMessageKey(model.id))
-            .apply()
+        clearLocalLoadFailureHistory(model.id)
     }
 
-    fun recentFailureCount(modelId: String): Int {
+    fun recentFailure(modelId: String): LocalModelFailure? {
         val lastFailureAt = preferences.getLong(failureTimeKey(modelId), 0L)
-        if (lastFailureAt <= 0L ||
+        val count = preferences.getInt(failureKey(modelId), 0)
+        if (lastFailureAt <= 0L || count <= 0 ||
             System.currentTimeMillis() - lastFailureAt > FAILURE_WINDOW_MILLIS
         ) {
-            return 0
+            return null
         }
-        return preferences.getInt(failureKey(modelId), 0)
+        val type = preferences.getString(failureTypeKey(modelId), null)
+            ?.let { runCatching { LocalModelFailureType.valueOf(it) }.getOrNull() }
+            ?: LocalModelFailureType.UNKNOWN
+        return LocalModelFailure(count = count, lastFailureAtMillis = lastFailureAt, type = type)
     }
+
+    fun recentFailureCount(modelId: String): Int = recentFailure(modelId)?.count ?: 0
 
     private fun clearLocalLoadFailureHistory(modelId: String) {
         preferences.edit()
             .remove(failureKey(modelId))
             .remove(failureTimeKey(modelId))
+            .remove(failureTypeKey(modelId))
             .remove(failureProfileKey(modelId))
             .remove(failureMessageKey(modelId))
             .apply()
@@ -266,6 +271,7 @@ class LocalModelManager @Inject constructor(
         const val FAILURE_TIME_KEY_PREFIX = "local_load_failure_time_"
         const val FAILURE_PROFILE_KEY_PREFIX = "local_load_failure_profile_"
         const val FAILURE_MESSAGE_KEY_PREFIX = "local_load_failure_message_"
+        const val FAILURE_TYPE_KEY_PREFIX = "local_load_failure_type_"
         const val MAX_RECORDED_FAILURES = 3
         const val FAILURE_WINDOW_MILLIS = 24L * 60L * 60L * 1000L
     }
@@ -273,6 +279,8 @@ class LocalModelManager @Inject constructor(
     private fun failureKey(modelId: String): String = FAILURE_KEY_PREFIX + modelId
 
     private fun failureTimeKey(modelId: String): String = FAILURE_TIME_KEY_PREFIX + modelId
+
+    private fun failureTypeKey(modelId: String): String = FAILURE_TYPE_KEY_PREFIX + modelId
 
     private fun failureProfileKey(modelId: String): String = FAILURE_PROFILE_KEY_PREFIX + modelId
 

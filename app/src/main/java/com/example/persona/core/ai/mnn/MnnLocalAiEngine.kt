@@ -13,7 +13,9 @@ import com.example.persona.core.ai.GenerationMetrics
 import com.example.persona.core.ai.GenerationSession
 import com.example.persona.core.ai.InstalledModel
 import com.example.persona.core.ai.LocalAiEngine
+import com.example.persona.core.ai.LocalModelFailureType
 import com.example.persona.core.ai.StopReason
+import com.example.persona.core.ai.classifyLocalModelFailure
 import com.example.persona.core.ai.prompt.PromptAdapterRegistry
 import com.example.persona.core.ai.prompt.Tokenizer
 import kotlinx.coroutines.CancellationException
@@ -37,7 +39,8 @@ import javax.inject.Singleton
 
 @Singleton
 class MnnLocalAiEngine @Inject constructor(
-    private val promptAdapterRegistry: PromptAdapterRegistry
+    private val promptAdapterRegistry: PromptAdapterRegistry,
+    private val sessionFactory: NativeSessionFactory
 ) : LocalAiEngine {
     private val initializationMutex = Mutex()
     private val generationMutex = Mutex()
@@ -59,7 +62,10 @@ class MnnLocalAiEngine @Inject constructor(
         initializationMutex.withLock {
             if (model.backend != Backend.MNN) {
                 synchronized(runtimeLock) {
-                    _state.value = EngineState.Error("当前引擎不支持该模型后端")
+                    _state.value = EngineState.Error(
+                        "当前引擎不支持该模型后端",
+                        LocalModelFailureType.INCOMPATIBLE
+                    )
                 }
                 return@withLock false
             }
@@ -67,7 +73,10 @@ class MnnLocalAiEngine @Inject constructor(
             val configFile = File(model.modelDir, "config.json")
             if (!configFile.isFile) {
                 synchronized(runtimeLock) {
-                    _state.value = EngineState.Error("\u6a21\u578b\u914d\u7f6e\u6587\u4ef6\u4e0d\u5b58\u5728")
+                    _state.value = EngineState.Error(
+                        "\u6a21\u578b\u914d\u7f6e\u6587\u4ef6\u4e0d\u5b58\u5728",
+                        LocalModelFailureType.CORRUPT
+                    )
                 }
                 return@withLock false
             }
@@ -88,7 +97,7 @@ class MnnLocalAiEngine @Inject constructor(
                 nextVersion to activeRuntime.nativeSession
             }
             nativeSessionToClose?.close()
-            val nativeSession: NativeMnnRuntimeSession = NativeMnnSession()
+            val nativeSession: NativeMnnRuntimeSession = sessionFactory.create()
             val loaded = try {
                 val result = nativeSession.load(configFile.absolutePath)
                 currentCoroutineContext().ensureActive()
@@ -100,7 +109,10 @@ class MnnLocalAiEngine @Inject constructor(
                 Log.e(TAG, "MNN model load failed: ${model.id}", error)
                 synchronized(runtimeLock) {
                     if (runtime.lifecycleVersion == initializationVersion) {
-                        _state.value = EngineState.Error(error.message ?: "MNN \u6a21\u578b\u52a0\u8f7d\u5931\u8d25")
+                        _state.value = EngineState.Error(
+                            error.message ?: "MNN \u6a21\u578b\u52a0\u8f7d\u5931\u8d25",
+                            classifyLocalModelFailure(error)
+                        )
                     }
                 }
                 false
@@ -121,7 +133,10 @@ class MnnLocalAiEngine @Inject constructor(
                         _state.value = EngineState.Ready
                         Log.i(TAG, "MNN model loaded: id=${model.id}, elapsedMs=${SystemClock.elapsedRealtime() - startMs}")
                     } else if (_state.value !is EngineState.Error) {
-                        _state.value = EngineState.Error("MNN \u6a21\u578b\u52a0\u8f7d\u5931\u8d25")
+                        _state.value = EngineState.Error(
+                            "MNN \u6a21\u578b\u52a0\u8f7d\u5931\u8d25",
+                            LocalModelFailureType.TRANSIENT
+                        )
                     }
                     true
                 }
@@ -336,7 +351,10 @@ class MnnLocalAiEngine @Inject constructor(
                             false
                         } else {
                             runtime = runtime.copy(activeGeneration = null)
-                            _state.value = EngineState.Error(error.message ?: "MNN \u751f\u6210\u5931\u8d25")
+                            _state.value = EngineState.Error(
+                                error.message ?: "MNN \u751f\u6210\u5931\u8d25",
+                                classifyLocalModelFailure(error)
+                            )
                             true
                         }
                     }
@@ -475,6 +493,7 @@ class MnnLocalAiEngine @Inject constructor(
         const val TAG = "MnnLocalAiEngine"
         const val END_OF_PROMPT = "<eop>"
     }
+
 }
 
 private fun Int.toRate(elapsedMs: Long): Double {

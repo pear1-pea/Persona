@@ -8,7 +8,7 @@ internal fun interface NativeTokenCallback {
     fun onToken(token: String): Boolean
 }
 
-internal interface NativeMnnRuntimeSession {
+interface NativeMnnRuntimeSession {
     fun load(modelConfigPath: String): Boolean
 
     fun countTokens(text: String): Int
@@ -24,6 +24,10 @@ internal interface NativeMnnRuntimeSession {
     fun stop()
 
     fun close()
+}
+
+fun interface NativeSessionFactory {
+    fun create(): NativeMnnRuntimeSession
 }
 
 internal class NativeMnnSession : NativeMnnRuntimeSession {

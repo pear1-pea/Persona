@@ -37,7 +37,8 @@ if(PERSONA_MNN_SOURCE_DIR)
 else()
     FetchContent_Declare(
         mnn
-        URL https://github.com/alibaba/MNN/archive/refs/tags/3.6.1.zip
+        URL https://codeload.github.com/alibaba/MNN/zip/refs/tags/3.6.1
+        URL_HASH SHA256=93d60848879e68be554c247afe376657630a30652a7d8ec713e9e7d1bbf69260
     )
     FetchContent_MakeAvailable(mnn)
 endif()

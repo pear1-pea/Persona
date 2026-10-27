@@ -1,0 +1,4 @@
+{
+  "llm_model": "llm.mnn",
+  "llm_weight": "llm.mnn.weight"
+}

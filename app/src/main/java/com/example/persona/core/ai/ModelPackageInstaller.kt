@@ -2,8 +2,6 @@ package com.example.persona.core.ai
 
 import android.content.Context
 import android.net.Uri
-import android.system.Os
-import android.system.OsConstants
 import android.provider.DocumentsContract
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
@@ -24,7 +22,8 @@ sealed interface ModelPackageInstallResult {
 @Singleton
 class ModelPackageInstaller @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val validator: LocalModelValidator
+    private val validator: LocalModelValidator,
+    private val symlinkChecker: SymlinkChecker
 ) {
     suspend fun install(
         sourceTree: Uri,
@@ -32,52 +31,129 @@ class ModelPackageInstaller @Inject constructor(
         profile: DeviceProfile,
         recentFailureCount: (String) -> Int
     ): ModelPackageInstallResult = withContext(Dispatchers.IO) {
-        val staging = File(modelsRoot, ".staging/${UUID.randomUUID()}")
-        try {
-            modelsRoot.mkdirs()
-            check(modelsRoot.isDirectory) { "无法创建 models 目录" }
-            check(!modelsRoot.isSymbolicLink()) { "models 目录不能是 symbolic link" }
-            val stagingRoot = File(modelsRoot, ".staging")
-            check(!stagingRoot.exists() || !stagingRoot.isSymbolicLink()) {
-                "models staging 目录不能是 symbolic link"
-            }
-            check(staging.mkdirs()) { "无法创建模型 staging 目录" }
-
+        installWithStaging(modelsRoot, profile, recentFailureCount) { staging ->
             copyTree(sourceTree, staging)
-            val preflight = validator.validate(
-                modelDir = staging,
-                profile = profile,
-                requireReadyMarker = false,
-                recentFailureCount = recentFailureCount
-            )
-            val model = (preflight.result as? ModelScanResult.Ready)?.model
-                ?: return@withContext preflight.failureResult()
+        }
+    }
 
-            File(staging, LocalModelValidator.READY_MARKER).writeText("ready\n")
-            val finalCheck = validator.validate(
-                modelDir = staging,
-                profile = profile,
-                requireReadyMarker = true,
-                recentFailureCount = recentFailureCount
-            )
-            val checkedModel = (finalCheck.result as? ModelScanResult.Ready)?.model
-                ?: return@withContext finalCheck.failureResult()
+    /**
+     * Installs a package that already exists on the local file system.
+     *
+     * SAF imports are copied into the same staging directory first, so this path
+     * exercises the same validation, READY marker and atomic rename logic.
+     */
+    internal suspend fun installFromDirectory(
+        sourceDirectory: File,
+        modelsRoot: File,
+        profile: DeviceProfile,
+        recentFailureCount: (String) -> Int = { 0 }
+    ): ModelPackageInstallResult = withContext(Dispatchers.IO) {
+        installWithStaging(modelsRoot, profile, recentFailureCount) { staging ->
+            copyDirectory(sourceDirectory, staging)
+        }
+    }
 
-            val target = File(modelsRoot, checkedModel.id)
-            check(!target.exists() && !target.isSymbolicLink()) { "模型已安装：${checkedModel.id}" }
-            check(staging.renameTo(target)) { "模型目录无法原子落盘" }
-            ModelPackageInstallResult.Success(
-                checkedModel.copy(
-                    modelDir = target.canonicalPath,
-                    manifestPath = File(target, LocalModelValidator.MANIFEST_FILE).canonicalPath
-                )
-            )
+    private fun installWithStaging(
+        modelsRoot: File,
+        profile: DeviceProfile,
+        recentFailureCount: (String) -> Int,
+        copyIntoStaging: (File) -> Unit
+    ): ModelPackageInstallResult {
+        val staging = File(modelsRoot, ".staging/${UUID.randomUUID()}")
+        return try {
+            prepareStaging(modelsRoot, staging)
+            copyIntoStaging(staging)
+            installStaged(staging, modelsRoot, profile, recentFailureCount)
         } catch (error: CancellationException) {
             throw error
         } catch (error: Throwable) {
             ModelPackageInstallResult.Failure(error.message ?: "模型安装失败", error)
         } finally {
             if (staging.exists()) staging.deleteRecursively()
+        }
+    }
+
+    private fun prepareStaging(modelsRoot: File, staging: File) {
+        modelsRoot.mkdirs()
+        check(modelsRoot.isDirectory) { "无法创建 models 目录" }
+        check(!symlinkChecker.isSymbolicLink(modelsRoot)) { "models 目录不能是 symbolic link" }
+        val stagingRoot = File(modelsRoot, ".staging")
+        check(!stagingRoot.exists() || !symlinkChecker.isSymbolicLink(stagingRoot)) {
+            "models staging 目录不能是 symbolic link"
+        }
+        check(staging.mkdirs()) { "无法创建模型 staging 目录" }
+    }
+
+    private fun installStaged(
+        staging: File,
+        modelsRoot: File,
+        profile: DeviceProfile,
+        recentFailureCount: (String) -> Int
+    ): ModelPackageInstallResult {
+        val preflight = validator.validate(
+            modelDir = staging,
+            profile = profile,
+            requireReadyMarker = false,
+            recentFailureCount = recentFailureCount
+        )
+        val model = (preflight.result as? ModelScanResult.Ready)?.model
+            ?: return preflight.failureResult()
+
+        File(staging, LocalModelValidator.READY_MARKER).writeText("ready\n")
+        val finalCheck = validator.validate(
+            modelDir = staging,
+            profile = profile,
+            requireReadyMarker = true,
+            recentFailureCount = recentFailureCount
+        )
+        val checkedModel = (finalCheck.result as? ModelScanResult.Ready)?.model
+            ?: return finalCheck.failureResult()
+
+        val target = File(modelsRoot, checkedModel.id)
+        check(!target.exists() && !symlinkChecker.isSymbolicLink(target)) {
+            "模型已安装：${checkedModel.id}"
+        }
+        check(staging.renameTo(target)) { "模型目录无法原子落盘" }
+        return ModelPackageInstallResult.Success(
+            checkedModel.copy(
+                modelDir = target.canonicalPath,
+                manifestPath = File(target, LocalModelValidator.MANIFEST_FILE).canonicalPath
+            )
+        )
+    }
+
+    private fun copyDirectory(sourceDirectory: File, targetRoot: File) {
+        check(sourceDirectory.isDirectory) { "模型源目录不存在" }
+        check(!symlinkChecker.isSymbolicLink(sourceDirectory)) {
+            "模型源目录不能是 symbolic link"
+        }
+        val sourceRoot = sourceDirectory.canonicalFile
+        val targetCanonicalRoot = targetRoot.canonicalFile
+        sourceRoot.walkTopDown().forEach { source ->
+            if (source == sourceRoot) return@forEach
+            check(!symlinkChecker.isSymbolicLink(source)) {
+                "模型包不能包含 symbolic link：${source.name}"
+            }
+            val relative = source.relativeTo(sourceRoot)
+            val target = File(targetCanonicalRoot, relative.path)
+            val targetPath = target.canonicalPath
+            val rootPrefix = targetCanonicalRoot.path + File.separator
+            check(targetPath.startsWith(rootPrefix)) {
+                "模型包包含非法路径：${relative.path}"
+            }
+            if (source.isDirectory) {
+                check(target.mkdirs() || target.isDirectory) {
+                    "无法创建目录：${relative.path}"
+                }
+            } else {
+                target.parentFile?.mkdirs()
+                check(!target.exists()) { "模型包包含重复文件名：${relative.path}" }
+                source.inputStream().use { input ->
+                    FileOutputStream(target).use { output ->
+                        input.copyTo(output, DEFAULT_BUFFER_SIZE)
+                    }
+                }
+            }
         }
     }
 
@@ -136,12 +212,6 @@ class ModelPackageInstaller @Inject constructor(
         check('/' !in value && '\\' !in value) { "模型包包含非法路径" }
         check(value.none { it.code < 0x20 || it.code == 0x7f }) { "模型包包含非法文件名" }
         return value
-    }
-
-    private fun File.isSymbolicLink(): Boolean {
-        return runCatching {
-            Os.lstat(path).st_mode and OsConstants.S_IFMT == OsConstants.S_IFLNK
-        }.getOrDefault(false)
     }
 
     private fun ModelScanReport.failureResult(): ModelPackageInstallResult.Failure {

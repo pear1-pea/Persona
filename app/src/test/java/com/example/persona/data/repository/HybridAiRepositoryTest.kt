@@ -12,6 +12,8 @@ import com.example.persona.core.ai.GenerationSession
 import com.example.persona.core.ai.HybridRouter
 import com.example.persona.core.ai.InstalledModel
 import com.example.persona.core.ai.LocalAiEngine
+import com.example.persona.core.ai.LocalModelFailure
+import com.example.persona.core.ai.LocalModelFailureType
 import com.example.persona.core.ai.LocalModelManager
 import com.example.persona.core.ai.ModelAdmission
 import com.example.persona.core.ai.ModelAdmissionReport
@@ -38,6 +40,7 @@ import org.junit.Test
 import org.mockito.kotlin.any
 import org.mockito.kotlin.atLeastOnce
 import org.mockito.kotlin.eq
+import org.mockito.kotlin.inOrder
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
 import org.mockito.kotlin.verify
@@ -67,6 +70,7 @@ class HybridAiRepositoryTest {
         whenever(localModelManager.currentAdmission).thenReturn(admissionState)
         whenever(localModelManager.deviceCapability()).thenReturn(deviceProfile())
         whenever(localModelManager.recentFailureCount(any())).thenReturn(0)
+        whenever(localModelManager.recentFailure(any())).thenReturn(null)
         whenever(routingContextProvider.networkState()).thenReturn(NetworkState.UNMETERED)
         repository = HybridAiRepository(
             cloudRepository,
@@ -321,6 +325,56 @@ class HybridAiRepositoryTest {
         verify(localEngine).initialize(sampleModel())
     }
 
+
+    @Test
+    fun `permanent local failure blocks reinitialization`() = runTest {
+        whenever(localModelManager.recentFailure(sampleModel().id)).thenReturn(
+            LocalModelFailure(
+                count = 1,
+                lastFailureAtMillis = System.currentTimeMillis(),
+                type = LocalModelFailureType.CORRUPT
+            )
+        )
+
+        val mode = repository.selectModeForGeneration(forceCloud = false)
+
+        assertEquals(HybridAiRepository.Mode.CLOUD, mode)
+        verify(localEngine, never()).initialize(any())
+    }
+
+    @Test
+    fun `transient local failure backs off before retrying`() = runTest {
+        whenever(localModelManager.recentFailure(sampleModel().id)).thenReturn(
+            LocalModelFailure(
+                count = 1,
+                lastFailureAtMillis = System.currentTimeMillis(),
+                type = LocalModelFailureType.TRANSIENT
+            )
+        )
+
+        val mode = repository.selectModeForGeneration(forceCloud = false)
+
+        assertEquals(HybridAiRepository.Mode.CLOUD, mode)
+        verify(localEngine, never()).initialize(any())
+    }
+
+    @Test
+    fun `transient local failure retries after backoff`() = runTest {
+        whenever(localModelManager.recentFailure(sampleModel().id)).thenReturn(
+            LocalModelFailure(
+                count = 1,
+                lastFailureAtMillis = System.currentTimeMillis() - 60_000L,
+                type = LocalModelFailureType.TRANSIENT
+            )
+        )
+        whenever(localEngine.initialize(sampleModel())).thenReturn(true)
+
+        val mode = repository.selectModeForGeneration(forceCloud = false)
+
+        assertEquals(HybridAiRepository.Mode.LOCAL, mode)
+        verify(localEngine).initialize(sampleModel())
+    }
+
     @Test
     fun `initializeLocalModel releases local engine when no model is selected`() = runTest {
         modelState.value = null
@@ -331,6 +385,28 @@ class HybridAiRepositoryTest {
         assertEquals(false, initialized)
         assertEquals(HybridAiRepository.Mode.CLOUD, repository.activeMode.value)
         verify(localEngine, atLeastOnce()).release()
+    }
+
+    @Test
+    fun `prepare model deletion releases the engine before clearing the model`() = runTest {
+        whenever(localModelManager.clearCurrentModel()).thenReturn(Unit)
+
+        val prepared = repository.prepareModelForDeletion(sampleModel().modelDir)
+
+        assertTrue(prepared)
+        val ordered = inOrder(localEngine, localModelManager)
+        ordered.verify(localEngine).release()
+        ordered.verify(localModelManager).clearCurrentModel()
+        repository.finishModelDeletion()
+    }
+
+    @Test
+    fun `prepare model deletion is a no-op for a different model`() = runTest {
+        val prepared = repository.prepareModelForDeletion("/models/other")
+
+        assertTrue(prepared)
+        verify(localEngine, never()).release()
+        repository.finishModelDeletion()
     }
 
     @Test

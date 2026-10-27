@@ -10,6 +10,7 @@ import com.example.persona.core.ai.GenerationEvent
 import com.example.persona.core.ai.GenerationSession
 import com.example.persona.core.ai.InstalledModel
 import com.example.persona.core.ai.LocalAiEngine
+import com.example.persona.core.ai.LocalModelFailureType
 import com.example.persona.core.ai.LocalModelManager
 import com.example.persona.core.ai.PrivacyLevel
 import com.example.persona.core.ai.Route
@@ -18,6 +19,7 @@ import com.example.persona.core.ai.RoutingDecision
 import com.example.persona.core.ai.RoutingInput
 import com.example.persona.core.ai.HybridRouter
 import com.example.persona.core.ai.TaskComplexity
+import com.example.persona.core.ai.classifyLocalModelFailure
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -62,6 +64,9 @@ class HybridAiRepository @Inject constructor(
     @Volatile
     private var activeGenerationSession: GenerationSession? = null
 
+    @Volatile
+    private var deactivationInProgress = false
+
     init {
         routeScope.launch {
             try {
@@ -76,6 +81,10 @@ class HybridAiRepository @Inject constructor(
 
     suspend fun initializeLocalModel(): Boolean {
         return localInitializationMutex.withLock {
+            if (deactivationInProgress) {
+                releaseLocalRoute()
+                return@withLock false
+            }
             localModelManager.refreshInstalledModels()
             val model = localModelManager.currentModel.value ?: run {
                 releaseLocalRoute()
@@ -85,8 +94,48 @@ class HybridAiRepository @Inject constructor(
         }
     }
 
+    /**
+     * Prepares a model for deletion. The caller must always call
+     * [finishModelDeletion] in a finally block after removing the directory.
+     *
+     * While deactivation is in progress, [ensureLocalReady] refuses to load or
+     * reuse a local runtime, so a new generation cannot reacquire the model
+     * between release and file removal.
+     */
+    suspend fun prepareModelForDeletion(modelDir: String): Boolean {
+        return localInitializationMutex.withLock {
+            val current = localModelManager.currentModel.value
+            val isCurrent = current?.modelDir == modelDir
+            val isLoaded = loadedModelDir == modelDir
+            if (!isCurrent && !isLoaded) {
+                return@withLock true
+            }
+
+            deactivationInProgress = true
+            try {
+                releaseLocalRoute()
+                if (isCurrent) {
+                    localModelManager.clearCurrentModel()
+                }
+                true
+            } catch (error: CancellationException) {
+                deactivationInProgress = false
+                throw error
+            } catch (error: Throwable) {
+                Log.e(TAG, "Failed to deactivate local model for deletion: $modelDir", error)
+                deactivationInProgress = false
+                false
+            }
+        }
+    }
+
+    fun finishModelDeletion() {
+        deactivationInProgress = false
+    }
+
     fun selectMode(forceCloud: Boolean, localEnabled: Boolean = true): Mode {
         return if (!forceCloud &&
+            !deactivationInProgress &&
             localEnabled &&
             localModelManager.currentModel.value != null &&
             localAiEngine.state.value == EngineState.Ready &&
@@ -205,7 +254,12 @@ class HybridAiRepository @Inject constructor(
                                 failure = event
                                 localTerminal = true
                             }
-                            is GenerationEvent.Completed,
+                            is GenerationEvent.Completed -> {
+                                localTerminal = true
+                                localModelManager.currentModel.value?.let { model ->
+                                    localModelManager.recordLocalLoadSuccess(model)
+                                }
+                            }
                             is GenerationEvent.Stopped -> localTerminal = true
                         }
                         if (event !is GenerationEvent.Failed) {
@@ -241,9 +295,12 @@ class HybridAiRepository @Inject constructor(
                 if (localFailure != null && route == Route.LOCAL_THEN_CLOUD) {
                     Log.e(TAG, "Local generation failed; falling back to cloud")
                     localModelManager.currentModel.value?.let { model ->
+                        val cause = localFailure.error.cause
+                            ?: IllegalStateException(localFailure.error.message)
                         localModelManager.recordLocalLoadFailure(
                             model,
-                            localFailure.error.cause ?: IllegalStateException(localFailure.error.message)
+                            cause,
+                            classifyLocalModelFailure(cause)
                         )
                     }
                     _activeMode.value = Mode.CLOUD
@@ -251,9 +308,12 @@ class HybridAiRepository @Inject constructor(
                     emitAll(cloudRepository.streamResponse(systemPrompt, userMessage, history))
                 } else if (localFailure != null) {
                     localModelManager.currentModel.value?.let { model ->
+                        val cause = localFailure.error.cause
+                            ?: IllegalStateException(localFailure.error.message)
                         localModelManager.recordLocalLoadFailure(
                             model,
-                            localFailure.error.cause ?: IllegalStateException(localFailure.error.message)
+                            cause,
+                            classifyLocalModelFailure(cause)
                         )
                     }
                     emit(localFailure)
@@ -270,6 +330,11 @@ class HybridAiRepository @Inject constructor(
 
     private suspend fun ensureLocalReady(): Boolean {
         return localInitializationMutex.withLock {
+            if (deactivationInProgress) {
+                loadedModelDir = null
+                _activeMode.value = Mode.CLOUD
+                return@withLock false
+            }
             var model = localModelManager.currentModel.value
             if (model == null) {
                 localModelManager.refreshInstalledModels()
@@ -295,10 +360,27 @@ class HybridAiRepository @Inject constructor(
     }
 
     private suspend fun initializeSelectedModel(model: InstalledModel): Boolean {
-        if (localModelManager.recentFailureCount(model.id) > 0) {
-            loadedModelDir = null
-            _activeMode.value = Mode.CLOUD
-            return false
+        val recentFailure = localModelManager.recentFailure(model.id)
+        if (recentFailure != null) {
+            val now = System.currentTimeMillis()
+            if (recentFailure.isPermanent) {
+                Log.i(TAG, "Local model has a permanent failure: ${model.id}, type=${recentFailure.type}")
+                localAiEngine.release()
+                loadedModelDir = null
+                _activeMode.value = Mode.CLOUD
+                return false
+            }
+            if (!recentFailure.isReadyToRetry(now)) {
+                Log.i(
+                    TAG,
+                    "Local model retry is backing off: ${model.id}, " +
+                        "type=${recentFailure.type}, retryAt=${recentFailure.retryAtMillis()}"
+                )
+                localAiEngine.release()
+                loadedModelDir = null
+                _activeMode.value = Mode.CLOUD
+                return false
+            }
         }
         selectedModelDir = model.modelDir
         val initialized = try {
@@ -307,17 +389,25 @@ class HybridAiRepository @Inject constructor(
             throw error
         } catch (error: Throwable) {
             Log.e(TAG, "Local model initialization failed: ${model.id}", error)
-            localModelManager.recordLocalLoadFailure(model, error)
+            localModelManager.recordLocalLoadFailure(
+                model,
+                error,
+                classifyLocalModelFailure(error)
+            )
             loadedModelDir = null
             _activeMode.value = Mode.CLOUD
             return false
         }
 
         if (!initialized) {
-            val reason = (localAiEngine.state.value as? EngineState.Error)?.reason
+            val errorState = localAiEngine.state.value as? EngineState.Error
+            val reason = errorState?.reason
+            val type = errorState?.type
+                ?: classifyLocalModelFailure(reason?.let { IllegalStateException(it) })
             localModelManager.recordLocalLoadFailure(
                 model,
-                reason?.let { IllegalStateException(it) }
+                reason?.let { IllegalStateException(it) },
+                type
             )
             loadedModelDir = null
             _activeMode.value = Mode.CLOUD
@@ -341,7 +431,8 @@ class HybridAiRepository @Inject constructor(
             localAiEngine.release()
             localModelManager.recordLocalLoadFailure(
                 model,
-                IllegalStateException("本地模型 smoke test 失败")
+                IllegalStateException("本地模型 smoke test 失败"),
+                LocalModelFailureType.TRANSIENT
             )
             loadedModelDir = null
             _activeMode.value = Mode.CLOUD
