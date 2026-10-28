@@ -19,7 +19,7 @@ interface MessageDao {
     @Query("SELECT * FROM messages WHERE personaId = :personaId AND ownerId = :ownerId ORDER BY timestamp DESC LIMIT :limit")
     suspend fun getRecentMessagesByPersonaId(personaId: String, ownerId: String, limit: Int): List<MessageEntity>
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertMessage(message: MessageEntity)
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)

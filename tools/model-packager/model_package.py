@@ -81,6 +81,21 @@ def ensure_file(root: Path, relative: str, label: str) -> Path:
     return candidate
 
 
+def check_tokenizer_line_endings(path: Path) -> None:
+    if path.suffix.lower() != ".txt":
+        return
+    # MNN's text vocabulary loader retains CR, making otherwise valid tokens miss.
+    with path.open("rb") as handle:
+        tail = b""
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                return
+            if b"\r\n" in tail + chunk:
+                raise PackageError("tokenizer.txt contains CRLF; restore LF and regenerate the manifest")
+            tail = chunk[-1:]
+
+
 def load_mnn_config(root: Path) -> Dict[str, Any]:
     config_path = root / "config.json"
     if config_path.is_symlink() or not config_path.is_file():
@@ -181,7 +196,7 @@ def build_manifest(
 
     ensure_file(root, entry, "entry")
     ensure_file(root, weight, "weight")
-    ensure_file(root, tokenizer, "tokenizer")
+    check_tokenizer_line_endings(ensure_file(root, tokenizer, "tokenizer"))
 
     model_id = model_id or slugify(root.name)
     name = name or root.name
@@ -342,6 +357,9 @@ def validate_manifest(
 
     config_entry = config.get("llm_model")
     config_weight = config.get("llm_weight")
+    if not isinstance(config_entry, str) or not config_entry.strip():
+        errors.append("config.json is missing llm_model")
+        config_entry = None
     if isinstance(config_entry, str) and entry and config_entry != entry:
         errors.append(
             f"manifest entry ({entry}) does not match config.json llm_model ({config_entry})"
@@ -357,7 +375,7 @@ def validate_manifest(
             errors.append(str(error))
     if tokenizer:
         try:
-            ensure_file(root, tokenizer, "tokenizer")
+            check_tokenizer_line_endings(ensure_file(root, tokenizer, "tokenizer"))
         except PackageError as error:
             errors.append(str(error))
     if isinstance(config_weight, str):

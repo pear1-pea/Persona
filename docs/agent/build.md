@@ -61,6 +61,9 @@ On Windows, `sdk.dir` in `local.properties` may use either escaped backslashes
 - If `third_party/MNN` is missing, CMake downloads the official 3.6.1 source archive.
 - The fallback uses GitHub's codeload endpoint and verifies the pinned SHA-256.
 - To use local sources: `git submodule update --init --recursive`.
+- CPU is the acceptance baseline; OpenCL, Vulkan and optional KleidiAI are off.
+  `PERSONA_ENABLE_KLEIDIAI=ON` is an explicit CMake experiment, not a supported-device
+  promise. Record the effective CMake cache when comparing performance.
 
 On restricted networks, initialize the pinned submodule before building instead of
 relying on CMake's downloader. A failed or partial download is not an accepted source.

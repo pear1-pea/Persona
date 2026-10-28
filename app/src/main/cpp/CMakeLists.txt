@@ -18,6 +18,8 @@ set(MNN_BUILD_DEMO OFF CACHE BOOL "" FORCE)
 set(MNN_BUILD_OPENCV OFF CACHE BOOL "" FORCE)
 set(MNN_OPENCL OFF CACHE BOOL "" FORCE)
 set(MNN_VULKAN OFF CACHE BOOL "" FORCE)
+option(PERSONA_ENABLE_KLEIDIAI "Enable optional KleidiAI kernels for device experiments" OFF)
+set(MNN_KLEIDIAI ${PERSONA_ENABLE_KLEIDIAI} CACHE BOOL "" FORCE)
 set(MNN_USE_LOGCAT ON CACHE BOOL "" FORCE)
 set(MNN_SUPPORT_TRANSFORMER_FUSE ON CACHE BOOL "" FORCE)
 
@@ -46,6 +48,7 @@ endif()
 add_library(persona_mnn SHARED mnn_jni.cpp)
 target_compile_features(persona_mnn PRIVATE cxx_std_17)
 target_include_directories(persona_mnn PRIVATE
+    "${CMAKE_CURRENT_LIST_DIR}"
     "${mnn_SOURCE_DIR}/include"
     "${mnn_SOURCE_DIR}/transformers/llm/engine/include"
 )

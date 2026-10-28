@@ -10,13 +10,14 @@ class HybridRouterTest {
     private val router = HybridRouter()
 
     @Test
-    fun `force cloud wins over every other policy`() {
+    fun `force cloud cannot override local only or privacy`() {
         val decision = router.decide(
             input(forceCloud = true, localOnly = true, privacyLevel = PrivacyLevel.SENSITIVE)
         )
 
-        assertEquals(Route.CLOUD_ONLY, decision.route)
-        assertFalse(decision.isLocalPreferred)
+        assertEquals(Route.LOCAL, decision.route)
+        assertTrue(decision.isLocalPreferred)
+        assertFalse(decision.cloudAllowed)
     }
 
     @Test
@@ -44,7 +45,9 @@ class HybridRouterTest {
             )
         )
 
-        assertEquals(Route.CLOUD_ONLY, decision.route)
+        assertEquals(Route.LOCAL, decision.route)
+        assertFalse(decision.isExecutable)
+        assertFalse(decision.cloudAllowed)
         assertTrue(decision.reasons.any { it.contains("隐私") })
     }
 
@@ -117,11 +120,12 @@ class HybridRouterTest {
     }
 
     @Test
-    fun `recent local failures route to cloud`() {
-        val decision = router.decide(input(recentLocalFailureRate = 0.5f))
+    fun `blocked local retry routes to cloud`() {
+        val decision = router.decide(input(localRetryBlocked = true))
 
         assertEquals(Route.CLOUD_ONLY, decision.route)
-        assertTrue(decision.reasons.any { it.contains("失败率") })
+        assertTrue(decision.reasons.any { it.contains("退避") })
+        assertTrue(decision.reasons.none { it.contains("%") })
     }
 
     @Test
@@ -129,14 +133,6 @@ class HybridRouterTest {
         val decision = router.decide(input(taskComplexity = TaskComplexity.COMPLEX))
 
         assertEquals(Route.CLOUD, decision.route)
-    }
-
-    @Test
-    fun `low latency budget tries local before cloud`() {
-        val decision = router.decide(input(latencyBudgetMs = 1_500L))
-
-        assertEquals(Route.LOCAL_THEN_CLOUD, decision.route)
-        assertTrue(decision.reasons.any { it.contains("延迟") })
     }
 
     @Test
@@ -172,6 +168,28 @@ class HybridRouterTest {
         assertEquals(Route.LOCAL_THEN_CLOUD, decision.route)
     }
 
+    @Test
+    fun `metered network without a usable local model fails without cloud`() {
+        val decision = router.decide(input(networkState = NetworkState.METERED, localAdmission = ModelAdmission.BLOCKED))
+        assertFalse(decision.isExecutable)
+        assertFalse(decision.cloudAllowed)
+    }
+
+    @Test
+    fun `offline force cloud cannot create a cloud request`() {
+        val decision = router.decide(input(forceCloud = true, networkState = NetworkState.OFFLINE,
+            localAdmission = ModelAdmission.BLOCKED))
+        assertFalse(decision.isExecutable)
+        assertFalse(decision.cloudAllowed)
+    }
+
+    @Test
+    fun `private request cannot bypass thermal admission`() {
+        val decision = router.decide(input(privacyLevel = PrivacyLevel.PRIVATE, thermalStatus = ThermalStatus.CRITICAL))
+        assertFalse(decision.isExecutable)
+        assertFalse(decision.cloudAllowed)
+    }
+
     private fun input(
         forceCloud: Boolean = false,
         localOnly: Boolean = false,
@@ -182,8 +200,7 @@ class HybridRouterTest {
         batteryPercent: Int = 80,
         thermalStatus: ThermalStatus = ThermalStatus.NOMINAL,
         powerSaveMode: Boolean = false,
-        latencyBudgetMs: Long? = null,
-        recentLocalFailureRate: Float = 0f
+        localRetryBlocked: Boolean = false
     ): RoutingInput = RoutingInput(
         forceCloud = forceCloud,
         localOnly = localOnly,
@@ -194,7 +211,6 @@ class HybridRouterTest {
         batteryPercent = batteryPercent,
         thermalStatus = thermalStatus,
         powerSaveMode = powerSaveMode,
-        latencyBudgetMs = latencyBudgetMs,
-        recentLocalFailureRate = recentLocalFailureRate
+        localRetryBlocked = localRetryBlocked
     )
 }

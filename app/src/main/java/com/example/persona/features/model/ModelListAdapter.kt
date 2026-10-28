@@ -70,8 +70,8 @@ class ModelListAdapter(
                     ContextCompat.getColor(root.context, android.R.color.holo_orange_dark)
                 }
             )
-            btnSelect.text = if (item.isCurrent) "当前使用" else "设为当前"
-            btnSelect.isEnabled = item.isSelectable && !item.isCurrent
+            btnSelect.text = if (item.isCurrent) "重新选择" else "设为当前"
+            btnSelect.isEnabled = item.isSelectable
             btnSelect.setOnClickListener { onSelect(item) }
             btnDelete.setOnClickListener { onDelete(item) }
             btnDetails.setOnClickListener { onDetails(item) }

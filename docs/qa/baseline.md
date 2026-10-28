@@ -4,7 +4,7 @@ This document is filled on **Windows** (or CI), not on the Mac used for source e
 It is intentionally undated so the same checklist can be reused after environment or
 toolchain changes.
 
-Latest recorded run: [2026-10-27 P0 status](p0-status-2026-10-27.md).
+Latest recorded run: [2026-10-28 P1 status](p1-status-2026-10-28.md).
 The blank results below are a reusable checklist, not the status of that run.
 
 Run the evidence collector from the repository root:
@@ -45,6 +45,11 @@ Notes:
 - `third_party/MNN` is an optional submodule. If it is empty, CMake downloads MNN 3.6.1.
 - The app currently ships only `arm64-v8a`. A standard x86_64 Windows emulator cannot
   run the local model; use a physical arm64 device for model/JNI testing.
+- P1 acceptance uses the currently verified device/model/configuration scope. A 4 GB
+  phone is a demand-driven future expansion, not a P1 blocker or a verified target.
+  The dated P1 report includes SAF UI import, a five-minute paced workload and sampled
+  RSS/PSS, including the thermal limits. Resource admission and cloud/privacy
+  restrictions still apply; do not infer continuous full-load support from that run.
 
 ## 2. Android
 
@@ -91,6 +96,10 @@ npm run smoke
 The smoke covers registration, public/private Persona isolation, cross-user delete
 rejection, session listing and account deletion. It does **not** exercise the DeepSeek
 chat proxy (that requires a real upstream key).
+
+The isolated chat proxy/budget suite uses PostgreSQL and a controllable fake upstream:
+set `TEST_DATABASE_URL` to a disposable database and run `npm run test:integration`.
+It does not require a real key; see [backend test instructions](../../backend/README.md).
 
 ## 5. Results
 

@@ -8,7 +8,23 @@ internal fun interface NativeTokenCallback {
     fun onToken(token: String): Boolean
 }
 
+internal data class NativeGenerationDiagnostics(
+    val samplerRevision: Int,
+    val maxTokens: Int,
+    val decodeSteps: Int,
+    val outputTokens: Int
+)
+
+data class NativeGenerationTimings(
+    val inputTokens: Long,
+    val outputTokens: Long,
+    val prefillMicros: Long,
+    val decodeMicros: Long,
+    val samplingMicros: Long
+)
+
 interface NativeMnnRuntimeSession {
+    fun timings(): NativeGenerationTimings? = null
     fun load(modelConfigPath: String): Boolean
 
     fun countTokens(text: String): Int
@@ -35,6 +51,18 @@ internal class NativeMnnSession : NativeMnnRuntimeSession {
 
     @Volatile
     private var handle = 0L
+
+    override fun timings(): NativeGenerationTimings? {
+        lifecycleLock.readLock().lock()
+        try {
+            if (handle == 0L) return null
+            val values = nativeTimings(handle) ?: return null
+            check(values.size == 5)
+            return NativeGenerationTimings(values[0], values[1], values[2], values[3], values[4])
+        } finally {
+            lifecycleLock.readLock().unlock()
+        }
+    }
 
     override fun load(modelConfigPath: String): Boolean {
         ensureLibraryLoaded()
@@ -115,6 +143,34 @@ internal class NativeMnnSession : NativeMnnRuntimeSession {
         }
     }
 
+    // This advances the active sampler RNG; use only in isolated runtime tests.
+    internal fun sampleForVerification(draws: Int = 4096): IntArray {
+        require(draws in 1..65536)
+        lifecycleLock.readLock().lock()
+        try {
+            check(handle != 0L) { "MNN session has not been loaded" }
+            return checkNotNull(nativeSampleForVerification(handle, draws)) {
+                "MNN active sampler verification failed"
+            }
+        } finally {
+            lifecycleLock.readLock().unlock()
+        }
+    }
+
+    internal fun generationDiagnostics(): NativeGenerationDiagnostics {
+        lifecycleLock.readLock().lock()
+        try {
+            check(handle != 0L) { "MNN session has not been loaded" }
+            val values = checkNotNull(nativeGenerationDiagnostics(handle)) {
+                "MNN generation diagnostics unavailable"
+            }
+            check(values.size == 4)
+            return NativeGenerationDiagnostics(values[0], values[1], values[2], values[3])
+        } finally {
+            lifecycleLock.readLock().unlock()
+        }
+    }
+
     override fun close() {
         lifecycleLock.readLock().lock()
         try {
@@ -169,6 +225,11 @@ internal class NativeMnnSession : NativeMnnRuntimeSession {
     )
 
     private external fun nativeStop(handle: Long)
+
+    private external fun nativeSampleForVerification(handle: Long, draws: Int): IntArray?
+
+    private external fun nativeGenerationDiagnostics(handle: Long): IntArray?
+    private external fun nativeTimings(handle: Long): LongArray?
 
     private external fun nativeDestroy(handle: Long)
 

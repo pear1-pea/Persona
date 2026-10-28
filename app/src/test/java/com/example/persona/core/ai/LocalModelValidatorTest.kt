@@ -26,6 +26,40 @@ class LocalModelValidatorTest {
     }
 
     @Test
+    fun `LF text tokenizer with matching hashes is ready`() {
+        val dir = packageDir(files = { root ->
+            root.resolve(ModelPackageFixtures.DEFAULT_TOKENIZER).writeText("430 3\n!\n")
+            ModelPackageFixtures.defaultFiles(root)
+        })
+
+        assertTrue(validate(dir) is ModelScanResult.Ready)
+    }
+
+    @Test
+    fun `CRLF text tokenizer is rejected even with matching hashes`() {
+        val dir = packageDir(files = { root ->
+            root.resolve(ModelPackageFixtures.DEFAULT_TOKENIZER).writeText("430 3\r\n!\r\n")
+            ModelPackageFixtures.defaultFiles(root)
+        })
+
+        val result = validate(dir)
+
+        assertTrue(result is ModelScanResult.Corrupted)
+        assertTrue((result as ModelScanResult.Corrupted).reason.contains("CRLF"))
+    }
+
+    @Test
+    fun `CRLF crossing a read buffer boundary is rejected`() {
+        val dir = packageDir(files = { root ->
+            root.resolve(ModelPackageFixtures.DEFAULT_TOKENIZER)
+                .writeText("x".repeat(DEFAULT_BUFFER_SIZE - 1) + "\r\n")
+            ModelPackageFixtures.defaultFiles(root)
+        })
+
+        assertTrue(validate(dir) is ModelScanResult.Corrupted)
+    }
+
+    @Test
     fun `missing manifest is not installed`() {
         val dir = packageDir()
         dir.resolve("manifest.json").delete()

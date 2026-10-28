@@ -25,6 +25,10 @@ Location: `app/src/androidTest/java/com/example/persona/`.
 The MNN/JNI plan is in [`docs/qa/native-test-plan.md`](../qa/native-test-plan.md).
 JVM tests use `NativeSessionFactory` to exercise the engine lifecycle without loading
 the native library.
+The opt-in isolated package and real dual-model lifecycle command are documented in
+the native plan; dated [M1 acceptance](../qa/m1-status-2026-10-28.md) records the initial
+lifecycle results. [P1 acceptance](../qa/p1-status-2026-10-28.md) records the subsequent
+session, SAF and performance acceptance separately.
 
 ## Backend
 
@@ -33,6 +37,7 @@ cd backend
 npm ci
 npm run typecheck
 npm test          # validation schemas, security helpers, DTO mapping
+TEST_DATABASE_URL=postgres://test_user@127.0.0.1:5432/persona_test npm run test:integration
 npm run smoke     # two-user authorization/ownership acceptance, needs a running backend
 ```
 
@@ -40,13 +45,19 @@ npm run smoke     # two-user authorization/ownership acceptance, needs a running
 verifies public/private persona isolation, cross-user deletion rejection, session
 listing and account deletion.
 
+`test:integration` requires a disposable PostgreSQL database with schema/extension
+creation rights. It uses random schemas, a fake key and a controllable local upstream;
+it never calls DeepSeek. It covers stream termination, cancellation, backpressure,
+parameter forwarding and atomic budget accounting, plus the existing auth/persona
+smoke. Without `TEST_DATABASE_URL` the database tests skip, which is not acceptance.
+
 ## CI
 
 `.github/workflows/ci.yml` runs:
 
 - Android `assembleDebug` + `testDebugUnitTest`.
 - Backend `npm run typecheck` + `npm test`.
-- Backend Postgres service + `npm run smoke`.
+- Backend Postgres service + `npm run test:integration` + `npm run smoke`.
 - Model packager `python -m unittest discover`.
 - A manual `workflow_dispatch` Windows build and JVM tests.
 
@@ -60,7 +71,9 @@ NDK/CMake path; it is not required for every pull request.
 
 Fill [`docs/qa/baseline.md`](../qa/baseline.md) on the Windows machine after the first
 run. The Mac used for source editing does not have an Android SDK, so it cannot verify
-Kotlin compilation or JVM tests.
+the Android build or execute its Gradle JVM suite. Framework-free Kotlin tests may
+run separately with the matching compiler/JUnit versions; those results do not replace
+Android compilation, repository/ViewModel tests, or device acceptance.
 
 Use `scripts/verify-windows.ps1` for timestamped command logs and a JSON summary.
 `-RunLint` is advisory. `-RunBackendSmoke` also requires an explicitly configured,

@@ -24,6 +24,8 @@ Index of all project documentation. The agent entry point is
 - Gradle version catalog: `gradle/libs.versions.toml`
 - Verification baseline: [qa/baseline.md](qa/baseline.md)
 - Latest P0 verification: [qa/p0-status-2026-10-27.md](qa/p0-status-2026-10-27.md)
+- M1 runtime acceptance: [qa/m1-status-2026-10-28.md](qa/m1-status-2026-10-28.md)
+- P1 reliability acceptance: [qa/p1-status-2026-10-28.md](qa/p1-status-2026-10-28.md)
 - Native/device plan: [qa/native-test-plan.md](qa/native-test-plan.md)
 - Model package acceptance: [qa/model-package-acceptance.md](qa/model-package-acceptance.md)
 - Model packager: [../tools/model-packager/README.md](../tools/model-packager/README.md)

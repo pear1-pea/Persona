@@ -10,12 +10,15 @@ import com.example.persona.core.ai.LocalModelFailureType
 import com.example.persona.core.ai.ModelFamilies
 import com.example.persona.core.ai.PromptFormats
 import com.example.persona.core.ai.prompt.PromptAdapterRegistry
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -24,6 +27,26 @@ import org.junit.rules.TemporaryFolder
 import java.io.File
 
 class MnnLocalAiEngineTest {
+
+    @Test
+    fun `slow collector receives terminal after a full native delta buffer`() = runBlocking {
+        for (fails in listOf(false, true)) {
+            val engine = newEngine(tokens = List(65) { "word" })
+            assertTrue(engine.initialize(model))
+            if (fails) sessions.last().afterTokensError = IllegalStateException("injected after output")
+            val events = mutableListOf<GenerationEvent>()
+            withTimeout(5_000) {
+                engine.streamResponse(GenerationSession(), "hello").collect { event ->
+                    events += event
+                    if (events.size == 1) kotlinx.coroutines.delay(300)
+                }
+            }
+            assertEquals(65, events.count { it is GenerationEvent.Delta })
+            assertEquals(1, events.count { it is GenerationEvent.Completed || it is GenerationEvent.Failed })
+            assertEquals(fails, events.last() is GenerationEvent.Failed)
+            engine.release()
+        }
+    }
 
     @get:Rule
     val temporaryFolder = TemporaryFolder()
@@ -94,6 +117,99 @@ class MnnLocalAiEngineTest {
             (engine.state.value as EngineState.Error).type
         )
         assertEquals(1, sessions.single().loadCalls)
+    }
+
+    @Test
+    fun `failed initialization retains the same session when cleanup fails`() = runTest {
+        for (loadError in listOf(null, IllegalStateException("tokenizer invalid"))) {
+            val closeError = IllegalStateException("close failed")
+            val engine = newEngine(loadResult = false, loadError = loadError, closeError = closeError)
+
+            assertOriginalFailure(closeError, runCatching { engine.initialize(model) }.exceptionOrNull())
+            val native = sessions.last()
+            val failure = engine.state.value as EngineState.Error
+            assertEquals(
+                if (loadError == null) LocalModelFailureType.TRANSIENT else LocalModelFailureType.CORRUPT,
+                failure.type
+            )
+            assertEquals(1, native.loadCalls)
+            assertEquals(1, native.closeCalls)
+
+            native.closeError = null
+            engine.release()
+
+            assertEquals(2, native.closeCalls)
+            assertEquals(EngineState.Idle, engine.state.value)
+        }
+    }
+
+    @Test
+    fun `release during load does not lose a later cleanup failure`() = runTest {
+        val native = FakeNativeSession(loadResult = false, tokens = emptyList())
+        val closeError = IllegalStateException("close failed")
+        val engine = MnnLocalAiEngine(PromptAdapterRegistry(), NativeSessionFactory { native })
+        native.onLoad = {
+            engine.release()
+            assertEquals(1, native.closeCalls)
+            native.closeError = closeError
+        }
+
+        assertOriginalFailure(closeError, runCatching { engine.initialize(model) }.exceptionOrNull())
+        assertTrue(engine.state.value is EngineState.Error)
+        assertEquals(2, native.closeCalls)
+
+        native.closeError = null
+        engine.release()
+
+        assertEquals(3, native.closeCalls)
+        assertEquals(EngineState.Idle, engine.state.value)
+    }
+
+    @Test
+    fun `successful initialization cleanup clears ownership and preserves the load error`() = runTest {
+        for (loadError in listOf(null, IllegalStateException("tokenizer invalid"))) {
+            val engine = newEngine(loadResult = false, loadError = loadError)
+
+            assertFalse(engine.initialize(model))
+            val native = sessions.last()
+            assertEquals(
+                if (loadError == null) LocalModelFailureType.TRANSIENT else LocalModelFailureType.CORRUPT,
+                (engine.state.value as EngineState.Error).type
+            )
+            assertEquals(1, native.closeCalls)
+
+            engine.release()
+
+            assertEquals(1, native.closeCalls)
+        }
+    }
+
+    @Test
+    fun `initialization cleanup preserves the original cancellation`() = runTest {
+        for (closeError in listOf(null, IllegalStateException("close failed"))) {
+            val cancellation = CancellationException("load cancelled")
+            val engine = newEngine(loadError = cancellation, closeError = closeError)
+
+            assertOriginalFailure(cancellation, runCatching { engine.initialize(model) }.exceptionOrNull())
+            val native = sessions.last()
+            assertEquals(1, native.closeCalls)
+            if (closeError == null) {
+                assertEquals(EngineState.Idle, engine.state.value)
+                assertTrue(cancellation.suppressed.isEmpty())
+            } else {
+                assertSame(closeError, cancellation.suppressed.single())
+                assertEquals(
+                    LocalModelFailureType.TRANSIENT,
+                    (engine.state.value as EngineState.Error).type
+                )
+            }
+
+            native.closeError = null
+            engine.release()
+
+            assertEquals(if (closeError == null) 1 else 2, native.closeCalls)
+            assertEquals(EngineState.Idle, engine.state.value)
+        }
     }
 
     @Test
@@ -202,6 +318,39 @@ class MnnLocalAiEngineTest {
     }
 
     @Test
+    fun `a request stopped before collection never invokes native generation`() = runBlocking<Unit> {
+        val engine = newEngine(tokens = listOf("must not generate"))
+        assertTrue(engine.initialize(model))
+        val request = GenerationSession()
+        engine.stopGeneration(request)
+
+        val events = withTimeout(5_000) {
+            engine.streamResponse(request, "hi").toList()
+        }
+
+        assertTrue(events.single() is GenerationEvent.Stopped)
+        assertEquals(0, sessions.single().generateCalls)
+    }
+
+    @Test
+    fun `stop during prompt planning prevents native generation`() = runBlocking<Unit> {
+        val engine = newEngine(tokens = listOf("must not generate"))
+        assertTrue(engine.initialize(model))
+        val request = GenerationSession()
+        sessions.single().onCountTokens = { engine.stopGeneration(request) }
+
+        val events = withTimeout(5_000) {
+            engine.streamResponse(request, "hi").toList()
+        }
+
+        assertEquals(
+            com.example.persona.core.ai.StopReason.USER_REQUESTED,
+            (events.single() as GenerationEvent.Stopped).reason
+        )
+        assertEquals(0, sessions.single().generateCalls)
+    }
+
+    @Test
     fun `release closes the active session`() = runTest {
         val engine = newEngine()
         assertTrue(engine.initialize(model))
@@ -212,14 +361,40 @@ class MnnLocalAiEngineTest {
         assertEquals(EngineState.Idle, engine.state.value)
     }
 
+    @Test
+    fun `release failure retains the native session so closing can be retried`() = runTest {
+        val engine = newEngine()
+        assertTrue(engine.initialize(model))
+        val native = sessions.single()
+        native.closeError = IllegalStateException("close failed")
+
+        assertTrue(runCatching { engine.release() }.isFailure)
+        assertTrue(engine.state.value is EngineState.Error)
+        native.closeError = null
+        engine.release()
+
+        assertEquals(2, native.closeCalls)
+        assertEquals(EngineState.Idle, engine.state.value)
+    }
+
+    private fun assertOriginalFailure(expected: Throwable, actual: Throwable?) {
+        assertEquals(expected.javaClass, actual?.javaClass)
+        assertEquals(expected.message, actual?.message)
+        assertTrue(generateSequence(actual) { it.cause }.any { it === expected })
+    }
+
     private fun newEngine(
         loadResult: Boolean = true,
-        tokens: List<String> = listOf("hello")
+        tokens: List<String> = listOf("hello"),
+        loadError: Throwable? = null,
+        closeError: Throwable? = null
     ): MnnLocalAiEngine {
         return MnnLocalAiEngine(
             promptAdapterRegistry = PromptAdapterRegistry(),
             sessionFactory = NativeSessionFactory {
                 FakeNativeSession(loadResult = loadResult, tokens = tokens).also {
+                    it.loadError = loadError
+                    it.closeError = closeError
                     sessions.add(it)
                 }
             }
@@ -235,13 +410,23 @@ class MnnLocalAiEngineTest {
         var resetCalls = 0
         var generateCalls = 0
         var generateError: Throwable? = null
+        var afterTokensError: Throwable? = null
+        var loadError: Throwable? = null
+        var closeError: Throwable? = null
+        var onLoad: (() -> Unit)? = null
+        var onCountTokens: (() -> Unit)? = null
 
         override fun load(modelConfigPath: String): Boolean {
             loadCalls += 1
+            onLoad?.invoke()
+            loadError?.let { throw it }
             return loadResult
         }
 
-        override fun countTokens(text: String): Int = text.length
+        override fun countTokens(text: String): Int {
+            onCountTokens?.invoke()
+            return text.length
+        }
 
         override fun reset() {
             resetCalls += 1
@@ -255,12 +440,14 @@ class MnnLocalAiEngineTest {
             generateCalls += 1
             generateError?.let { throw it }
             tokens.forEach { token -> onToken(token) }
+            afterTokensError?.let { throw it }
         }
 
         override fun stop() = Unit
 
         override fun close() {
             closeCalls += 1
+            closeError?.let { throw it }
         }
     }
 }

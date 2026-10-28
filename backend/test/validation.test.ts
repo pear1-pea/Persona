@@ -93,3 +93,13 @@ test("chat schema rejects an unsupported role and non-streaming requests", () =>
     stream: false
   }))
 })
+
+test("chat schema rejects invalid generation controls and accepts boundary values", () => {
+  const base = { model: "deepseek-v4-flash", messages: [{ role: "user", content: "hello" }], stream: true }
+  for (const controls of [
+    { temperature: -0.1 }, { temperature: 2.1 }, { top_p: 0 }, { top_p: 1.1 },
+    { thinking: { type: "automatic" } }, { thinking: { type: "disabled", extra: true } },
+    { max_tokens: 0 }, { max_tokens: 1.5 }, { max_tokens: Number.MAX_SAFE_INTEGER + 1 }, { max_tokens: "10" }
+  ]) assert.throws(() => chatSchema.parse({ ...base, ...controls }))
+  assert.equal(chatSchema.parse({ ...base, temperature: 0, top_p: 1, max_tokens: 1 }).max_tokens, 1)
+})

@@ -87,6 +87,7 @@ It checks:
 - Required paths (`config.json`, entry, weight, tokenizer) are covered.
 - Path traversal, duplicate paths and symlinks.
 - `READY` when `--require-ready` is passed.
+- Text tokenizer files use LF line endings. CRLF is rejected even when hashes match.
 
 Exit code is `0` only when there are no errors. Warnings (for example, missing
 `READY`) do not fail validation.
@@ -159,6 +160,14 @@ python3 tools/model-packager/validate_package.py \
 The manifest hashes bytes, so the repository marks this fixture as `-text` in
 `.gitattributes`. If you commit your own package fixture, do the same; otherwise Git's
 CRLF conversion on Windows will invalidate the hashes.
+
+MNN 3.6.1 reads text vocabulary lines without removing a trailing carriage return.
+A CRLF tokenizer can therefore pass file hashing but abort native tokenization with
+`unordered_map::at: key not found`. Keep tokenizer files byte-for-byte unchanged when
+copying or checking out models. If a text tokenizer was converted to CRLF, restore a
+trusted LF copy in a separate package directory and regenerate its manifest; do not
+edit the installed package or reuse its old hashes. The packager does not silently
+rewrite model files.
 
 ## Signature
 

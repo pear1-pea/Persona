@@ -18,6 +18,7 @@ import com.example.persona.core.ai.StopReason
 import com.example.persona.core.ai.classifyLocalModelFailure
 import com.example.persona.core.ai.prompt.PromptAdapterRegistry
 import com.example.persona.core.ai.prompt.Tokenizer
+import com.example.persona.core.ai.prompt.ContextBudgetExceeded
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -28,6 +29,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -56,7 +58,6 @@ class MnnLocalAiEngine @Inject constructor(
     )
 
     private var runtime = RuntimeSnapshot()
-    private val stopReasons = mutableMapOf<String, StopReason>()
 
     override suspend fun initialize(model: InstalledModel): Boolean = withContext(Dispatchers.IO) {
         initializationMutex.withLock {
@@ -93,17 +94,42 @@ class MnnLocalAiEngine @Inject constructor(
                 val nextVersion = runtime.lifecycleVersion + 1
                 _state.value = EngineState.Initializing
                 val activeRuntime = runtime
+                activeRuntime.activeGeneration?.requestStop(StopReason.SESSION_REPLACED)
                 runtime = RuntimeSnapshot(lifecycleVersion = nextVersion)
                 nextVersion to activeRuntime.nativeSession
             }
-            nativeSessionToClose?.close()
-            val nativeSession: NativeMnnRuntimeSession = sessionFactory.create()
+            try {
+                nativeSessionToClose?.close()
+            } catch (error: Throwable) {
+                synchronized(runtimeLock) {
+                    if (runtime.lifecycleVersion == initializationVersion) {
+                        runtime = runtime.copy(nativeSession = nativeSessionToClose)
+                        _state.value = EngineState.Error("本地模型资源释放失败", LocalModelFailureType.TRANSIENT)
+                    }
+                }
+                throw error
+            }
+            val nativeSession = synchronized(runtimeLock) {
+                if (runtime.lifecycleVersion != initializationVersion || _state.value != EngineState.Initializing) {
+                    return@withLock false
+                }
+                sessionFactory.create().also { runtime = runtime.copy(nativeSession = it) }
+            }
             val loaded = try {
                 val result = nativeSession.load(configFile.absolutePath)
                 currentCoroutineContext().ensureActive()
                 result
             } catch (error: CancellationException) {
-                nativeSession.close()
+                try {
+                    closeInitializationSession(nativeSession, initializationVersion)
+                    synchronized(runtimeLock) {
+                        if (runtime.lifecycleVersion == initializationVersion) {
+                            _state.value = EngineState.Idle
+                        }
+                    }
+                } catch (cleanupError: Throwable) {
+                    if (cleanupError !== error) error.addSuppressed(cleanupError)
+                }
                 throw error
             } catch (error: Throwable) {
                 Log.e(TAG, "MNN model load failed: ${model.id}", error)
@@ -119,7 +145,7 @@ class MnnLocalAiEngine @Inject constructor(
             }
 
             val committed = synchronized(runtimeLock) {
-                if (runtime.lifecycleVersion != initializationVersion ||
+                if (runtime.lifecycleVersion != initializationVersion || runtime.nativeSession !== nativeSession ||
                     _state.value != EngineState.Initializing
                 ) {
                     false
@@ -142,13 +168,33 @@ class MnnLocalAiEngine @Inject constructor(
                 }
             }
             if (!committed) {
-                nativeSession.close()
+                closeInitializationSession(nativeSession, initializationVersion)
                 return@withLock false
             }
             if (!loaded) {
-                nativeSession.close()
+                closeInitializationSession(nativeSession, initializationVersion)
             }
             loaded
+        }
+    }
+
+    private fun closeInitializationSession(nativeSession: NativeMnnRuntimeSession, initializationVersion: Long) {
+        try {
+            nativeSession.close()
+        } catch (error: Throwable) {
+            synchronized(runtimeLock) {
+                // A concurrent release may have completed before load returned.
+                if (runtime.nativeSession == null) runtime = runtime.copy(nativeSession = nativeSession)
+                if (runtime.nativeSession === nativeSession && _state.value !is EngineState.Error) {
+                    _state.value = EngineState.Error("本地模型资源释放失败", LocalModelFailureType.TRANSIENT)
+                }
+            }
+            throw error
+        }
+        synchronized(runtimeLock) {
+            if (runtime.lifecycleVersion == initializationVersion && runtime.nativeSession === nativeSession) {
+                runtime = runtime.copy(nativeSession = null)
+            }
         }
     }
 
@@ -247,8 +293,13 @@ class MnnLocalAiEngine @Inject constructor(
         val runtimeSnapshot = synchronized(runtimeLock) { runtime }
         val nativeSession = runtimeSnapshot.nativeSession
         val model = runtimeSnapshot.model
+        session.stopReason?.let { reason ->
+            send(GenerationEvent.Stopped(reason, ""))
+            close()
+            return@callbackFlow
+        }
         if (nativeSession == null || model == null || _state.value != EngineState.Ready) {
-            trySend(
+            send(
                 GenerationEvent.Failed(
                     backend = Backend.MNN,
                     error = GenerationError(
@@ -276,11 +327,12 @@ class MnnLocalAiEngine @Inject constructor(
         } catch (error: CancellationException) {
             throw error
         } catch (error: Throwable) {
-            trySend(
+            send(
                 GenerationEvent.Failed(
                     backend = Backend.MNN,
                     error = GenerationError(
-                        type = GenerationErrorType.MODEL_RUNTIME,
+                        type = if (error is ContextBudgetExceeded) GenerationErrorType.INPUT_BUDGET_EXCEEDED
+                            else GenerationErrorType.MODEL_RUNTIME,
                         message = error.message ?: "Prompt 构建失败",
                         cause = error
                     ),
@@ -291,20 +343,20 @@ class MnnLocalAiEngine @Inject constructor(
             return@callbackFlow
         }
 
-        synchronized(runtimeLock) {
+        val registered = synchronized(runtimeLock) {
             if (runtime.nativeSession !== nativeSession ||
-                _state.value != EngineState.Ready
+                _state.value != EngineState.Ready || session.stopReason != null
             ) {
-                trySend(
-                    GenerationEvent.Stopped(
-                        reason = StopReason.SESSION_REPLACED,
-                        partialText = ""
-                    )
-                )
-                close()
-                return@callbackFlow
+                false
+            } else {
+                runtime = runtime.copy(activeGeneration = session)
+                true
             }
-            runtime = runtime.copy(activeGeneration = session)
+        }
+        if (!registered) {
+            send(GenerationEvent.Stopped(session.stopReason ?: StopReason.SESSION_REPLACED, ""))
+            close()
+            return@callbackFlow
         }
         val generationJob = launch(Dispatchers.IO) {
             generationMutex.withLock {
@@ -317,13 +369,13 @@ class MnnLocalAiEngine @Inject constructor(
                 try {
                     val shouldGenerate = synchronized(runtimeLock) {
                         runtime.activeGeneration?.id == session.id &&
-                            runtime.nativeSession === nativeSession
+                            runtime.nativeSession === nativeSession && session.stopReason == null
                     }
                     if (shouldGenerate) {
                         nativeSession.generate(payload, params) { token ->
                             val ownsSession = synchronized(runtimeLock) {
                                 runtime.activeGeneration?.id == session.id &&
-                                    runtime.nativeSession === nativeSession
+                                    runtime.nativeSession === nativeSession && session.stopReason == null
                             }
                             if (!ownsSession) {
                                 false
@@ -347,7 +399,7 @@ class MnnLocalAiEngine @Inject constructor(
                 } catch (error: Throwable) {
                     generationFailed = true
                     val ownsActiveSession = synchronized(runtimeLock) {
-                        if (runtime.activeGeneration?.id != session.id) {
+                        if (runtime.activeGeneration?.id != session.id || session.stopReason != null) {
                             false
                         } else {
                             runtime = runtime.copy(activeGeneration = null)
@@ -360,7 +412,7 @@ class MnnLocalAiEngine @Inject constructor(
                     }
                     if (ownsActiveSession) {
                         Log.e(TAG, "MNN generation failed: session=${session.id}", error)
-                        trySend(
+                        send(
                             GenerationEvent.Failed(
                                 backend = Backend.MNN,
                                 error = GenerationError(
@@ -373,11 +425,9 @@ class MnnLocalAiEngine @Inject constructor(
                         )
                         close()
                     } else {
-                        trySend(
+                        send(
                             GenerationEvent.Stopped(
-                                reason = synchronized(runtimeLock) {
-                                    stopReasons.remove(session.id) ?: StopReason.SESSION_REPLACED
-                                },
+                                reason = session.stopReason ?: StopReason.SESSION_REPLACED,
                                 partialText = partialText.toString()
                             )
                         )
@@ -387,7 +437,7 @@ class MnnLocalAiEngine @Inject constructor(
                 if (!generationFailed && currentCoroutineContext().isActive) {
                     val completedWithOwnership = synchronized(runtimeLock) {
                         if (runtime.activeGeneration?.id == session.id &&
-                            runtime.nativeSession === nativeSession
+                            runtime.nativeSession === nativeSession && session.stopReason == null
                         ) {
                             runtime = runtime.copy(activeGeneration = null)
                             true
@@ -396,11 +446,9 @@ class MnnLocalAiEngine @Inject constructor(
                         }
                     }
                     if (!completedWithOwnership) {
-                        trySend(
+                        send(
                             GenerationEvent.Stopped(
-                                reason = synchronized(runtimeLock) {
-                                    stopReasons.remove(session.id) ?: StopReason.SESSION_REPLACED
-                                },
+                                reason = session.stopReason ?: StopReason.SESSION_REPLACED,
                                 partialText = partialText.toString()
                             )
                         )
@@ -429,13 +477,19 @@ class MnnLocalAiEngine @Inject constructor(
                             "outputTokens=$outputTokenCount, " +
                             "outputTokensPerSecond=$outputTokensPerSecond, elapsedMs=$elapsedMs"
                     )
-                    trySend(
+                    val nativeTimings = runCatching { nativeSession.timings() }.getOrNull()
+                    send(
                         GenerationEvent.Completed(
                             GenerationMetrics(
                                 firstTokenLatencyMs = firstChunkMs,
                                 totalLatencyMs = elapsedMs,
                                 outputTokens = outputTokenCount,
-                                tokensPerSecond = outputTokenCount.toRate(elapsedMs)
+                                tokensPerSecond = outputTokenCount.toRate(elapsedMs),
+                                nativeInputTokens = nativeTimings?.inputTokens,
+                                nativeOutputTokens = nativeTimings?.outputTokens,
+                                prefillMicros = nativeTimings?.prefillMicros,
+                                decodeMicros = nativeTimings?.decodeMicros,
+                                samplingMicros = nativeTimings?.samplingMicros
                             )
                         )
                     )
@@ -456,14 +510,14 @@ class MnnLocalAiEngine @Inject constructor(
             sessionToStop?.stop()
             generationJob.cancel()
         }
-    }
+    }.flowOn(Dispatchers.IO)
 
     override fun stopGeneration(session: GenerationSession) {
+        session.requestStop(StopReason.USER_REQUESTED)
         val nativeSession = synchronized(runtimeLock) {
             if (runtime.activeGeneration?.id != session.id) {
                 null
             } else {
-                stopReasons[session.id] = StopReason.USER_REQUESTED
                 runtime = runtime.copy(activeGeneration = null)
                 runtime.nativeSession
             }
@@ -472,17 +526,31 @@ class MnnLocalAiEngine @Inject constructor(
     }
 
     override fun release() {
-        val nativeSessionToClose = synchronized(runtimeLock) {
+        val (releaseVersion, nativeSessionToClose) = synchronized(runtimeLock) {
             val nextVersion = runtime.lifecycleVersion + 1
             _state.value = EngineState.Idle
             val activeRuntime = runtime
             activeRuntime.activeGeneration?.let { generation ->
-                stopReasons[generation.id] = StopReason.ENGINE_RELEASED
+                generation.requestStop(StopReason.ENGINE_RELEASED)
             }
-            runtime = RuntimeSnapshot(lifecycleVersion = nextVersion)
-            activeRuntime.nativeSession
+            runtime = activeRuntime.copy(activeGeneration = null, lifecycleVersion = nextVersion)
+            nextVersion to activeRuntime.nativeSession
         }
-        nativeSessionToClose?.close()
+        try {
+            nativeSessionToClose?.close()
+        } catch (error: Throwable) {
+            synchronized(runtimeLock) {
+                if (runtime.lifecycleVersion == releaseVersion) {
+                    _state.value = EngineState.Error("本地模型资源释放失败", LocalModelFailureType.TRANSIENT)
+                }
+            }
+            throw error
+        }
+        synchronized(runtimeLock) {
+            if (runtime.lifecycleVersion == releaseVersion) {
+                runtime = RuntimeSnapshot(lifecycleVersion = releaseVersion)
+            }
+        }
     }
 
     private fun sanitizeChunk(rawChunk: String): String {

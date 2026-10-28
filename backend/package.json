@@ -6,7 +6,8 @@
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test test/validation.test.ts test/security.test.ts test/dto.test.ts",
+    "test": "node --import tsx --test test/validation.test.ts test/security.test.ts test/dto.test.ts test/chat-stream.test.ts",
+    "test:integration": "node --import tsx --test test/chat.integration.test.ts test/chat-budget.integration.test.ts",
     "smoke": "node scripts/smoke-auth.mjs"
   },
   "engines": {

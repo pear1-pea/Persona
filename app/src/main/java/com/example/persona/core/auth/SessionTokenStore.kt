@@ -41,7 +41,27 @@ class SessionTokenStore @Inject constructor(
     }
 
     fun clear() {
-        preferences.edit().clear().apply()
+        preferences.edit()
+            .remove(KEY_TOKEN)
+            .remove(KEY_USER_ID)
+            .remove(KEY_EMAIL)
+            .apply()
+    }
+
+    fun pendingDeletedOwners(): Set<String> =
+        preferences.getStringSet(KEY_PENDING_DELETIONS, emptySet())?.toSet().orEmpty()
+
+    @Synchronized
+    fun markAccountDeleted(ownerId: String) {
+        require(ownerId != "OFFLINE_USER" && ownerId != "system")
+        check(preferences.edit()
+            .putStringSet(KEY_PENDING_DELETIONS, pendingDeletedOwners() + ownerId).commit())
+    }
+
+    @Synchronized
+    fun completeAccountDeletion(ownerId: String) {
+        check(preferences.edit()
+            .putStringSet(KEY_PENDING_DELETIONS, pendingDeletedOwners() - ownerId).commit())
     }
 
     private fun secretKey(): SecretKey {
@@ -97,5 +117,6 @@ class SessionTokenStore @Inject constructor(
         const val KEY_TOKEN = "token"
         const val KEY_USER_ID = "user_id"
         const val KEY_EMAIL = "email"
+        const val KEY_PENDING_DELETIONS = "pending_deleted_owners"
     }
 }

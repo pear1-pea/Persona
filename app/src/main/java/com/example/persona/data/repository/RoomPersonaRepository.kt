@@ -18,7 +18,10 @@ class RoomPersonaRepository @Inject constructor(
 ) : PersonaRepository {
 
     override suspend fun getPersonas(): List<Persona> {
-        return dao.getAllPersonas().map { it.toDomain() }
+        val identity = authManager.requestIdentity()
+        return dao.getAllPersonas().filter {
+            it.persona.creatorId == identity.ownerId || it.persona.creatorId == "system"
+        }.map { it.toDomain() }.also { authManager.requireIdentity(identity) }
     }
 
     suspend fun getPublicSeedPersonas(): List<Persona> {
@@ -26,23 +29,26 @@ class RoomPersonaRepository @Inject constructor(
     }
 
     override suspend fun getMyPersonas(): List<Persona> {
-        return dao.getPersonasByCreator(authManager.currentRepoId).map { it.toDomain() }    }
-
-    override suspend fun addPersona(name: String, traits: List<String>, backstory: String, isPublic: Boolean) {
-        val newId = UUID.randomUUID().toString()
-        val currentUserId = authManager.currentRepoId
-        val newPersona = Persona(
-            id = newId,
-            name = name,
-            avatarUrl = "https://api.dicebear.com/7.x/bottts/png?seed=$name", // random avatar
-            postImageUrl = "https://picsum.photos/seed/$newId/800/600",
-            traits = traits,
-            backstory = backstory,
-            creatorId = currentUserId,
-            isPublic = isPublic
-        )
-        dao.insertCompletePersona(newPersona.toEntity(), newPersona.toTraitEntities())
+        val identity = authManager.requestIdentity()
+        return dao.getPersonasByCreator(identity.ownerId).map { it.toDomain() }
+            .also { authManager.requireIdentity(identity) }
     }
+
+    override suspend fun addPersona(name: String, traits: List<String>, backstory: String, isPublic: Boolean) =
+        authManager.withLocalIdentity { currentUserId ->
+            val newId = UUID.randomUUID().toString()
+            val newPersona = Persona(
+                id = newId,
+                name = name,
+                avatarUrl = "https://api.dicebear.com/7.x/bottts/png?seed=$name", // random avatar
+                postImageUrl = "https://picsum.photos/seed/$newId/800/600",
+                traits = traits,
+                backstory = backstory,
+                creatorId = currentUserId,
+                isPublic = isPublic
+            )
+            dao.insertCompletePersona(newPersona.toEntity(), newPersona.toTraitEntities())
+        }
 
     override suspend fun updatePersona(
         id: String,
@@ -50,8 +56,9 @@ class RoomPersonaRepository @Inject constructor(
         traits: List<String>,
         backstory: String,
         isPublic: Boolean
-    ) {
-        val existing = dao.getPersonaById(id, authManager.currentRepoId)?.toDomain() ?: return
+    ) = authManager.withLocalIdentity { owner ->
+        val existing = dao.getPersonaById(id, owner)?.toDomain() ?: return@withLocalIdentity
+        if (existing.creatorId != owner) return@withLocalIdentity
         val updated = existing.copy(
             name = name,
             traits = traits,
@@ -62,7 +69,9 @@ class RoomPersonaRepository @Inject constructor(
     }
 
     override suspend fun getPersonaById(id: String): Persona? {
-        val entity = dao.getPersonaById(id, authManager.currentRepoId)
+        val identity = authManager.requestIdentity()
+        val entity = dao.getPersonaById(id, identity.ownerId)
+        authManager.requireIdentity(identity)
         return entity?.toDomain()
     }
 
@@ -71,7 +80,7 @@ class RoomPersonaRepository @Inject constructor(
     }
 
     override suspend fun deletePersona(id: String) {
-        dao.deletePersona(id, authManager.currentRepoId)
+        authManager.withLocalIdentity { owner -> dao.deletePersona(id, owner) }
     }
 
     suspend fun deletePersonasByCreator(creatorId: String) {

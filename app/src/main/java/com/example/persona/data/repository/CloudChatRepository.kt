@@ -7,16 +7,23 @@ import com.example.persona.core.ai.GenerationError
 import com.example.persona.core.ai.GenerationErrorType
 import com.example.persona.core.ai.GenerationEvent
 import com.example.persona.core.ai.GenerationMetrics
+import com.example.persona.core.ai.GenerationParams
+import com.example.persona.core.ai.prompt.CloudContextPlanner
+import com.example.persona.core.ai.prompt.ContextBudgetExceeded
 import com.example.persona.core.ai.prompt.ConservativeTokenizer
 import com.example.persona.core.auth.AuthTokenProvider
+import com.example.persona.core.auth.AuthIdentity
+import com.example.persona.core.auth.AuthManager
 import com.example.persona.data.remote.CloudGenerationException
 import com.example.persona.data.remote.CloudChatApi
+import com.example.persona.data.remote.SseDataReader
 import com.example.persona.data.remote.BackendConfig
 import com.example.persona.data.remote.dto.ChatRequest
 import com.example.persona.data.remote.dto.ChatResponse
 import com.example.persona.data.remote.dto.MessageDto
 import com.google.gson.Gson
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
@@ -24,8 +31,10 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.delay
 import okhttp3.ResponseBody
 import retrofit2.Call
 import retrofit2.Callback
@@ -33,27 +42,51 @@ import retrofit2.Response
 import javax.inject.Inject
 import java.io.BufferedReader
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+import java.net.SocketTimeoutException
 
-class CloudChatRepository @Inject constructor(
+class CloudChatRepository internal constructor(
     private val api: CloudChatApi,
     private val config: BackendConfig,
-    private val authTokenProvider: AuthTokenProvider
+    private val authTokenProvider: AuthTokenProvider,
+    private val progressTimeoutMs: Long
 ) {
+    @Inject constructor(api: CloudChatApi, config: BackendConfig, authTokenProvider: AuthTokenProvider) :
+        this(api, config, authTokenProvider, 90_000L)
+
     fun streamResponse(
         systemPrompt: String,
         userMessage: String,
         history: List<ChatMessage> = emptyList()
-    ): Flow<GenerationEvent> = callbackFlow {
+    ): Flow<GenerationEvent> = streamResponseWithParams(systemPrompt, userMessage, history, GenerationParams())
+
+    fun streamResponseWithParams(
+        systemPrompt: String,
+        userMessage: String,
+        history: List<ChatMessage>,
+        params: GenerationParams
+    ): Flow<GenerationEvent> {
+        val requestedToken = authTokenProvider.currentToken()
+        val manager = authTokenProvider as? AuthManager
+        val requestedIdentity = manager?.identity?.value
+        return callbackFlow {
         val startedAt = System.nanoTime()
         var firstTokenAt: Long? = null
-        val partialText = StringBuilder()
-        val cloudToken = if (config.isConfigured) {
-            authTokenProvider.currentToken() ?: authTokenProvider.refreshToken()
-        } else {
-            null
+        val partialText = StringBuffer()
+        val terminal = AtomicBoolean()
+        fun finish(event: GenerationEvent) {
+            if (terminal.compareAndSet(false, true)) {
+                launch(start = CoroutineStart.UNDISPATCHED) {
+                    send(event)
+                    close()
+                }
+            }
         }
+        val contextIdentity = currentCoroutineContext()[AuthIdentity]
+        val cloudToken = if (contextIdentity != null) contextIdentity.token else requestedToken
         if (!config.isConfigured || cloudToken.isNullOrBlank()) {
-            trySend(
+            send(
                 GenerationEvent.Failed(
                     backend = Backend.CLOUD,
                     error = GenerationError(
@@ -67,22 +100,63 @@ class CloudChatRepository @Inject constructor(
             return@callbackFlow
         }
 
-        val messages = buildMessages(systemPrompt, userMessage, history)
+        currentCoroutineContext().ensureActive()
+        if (authTokenProvider.currentToken() != cloudToken) {
+            close(CancellationException("Account or session changed"))
+            return@callbackFlow
+        }
+        val messages = try {
+            CloudContextPlanner.plan(systemPrompt, userMessage, history).map { MessageDto(it.role, it.content) }
+        } catch (error: ContextBudgetExceeded) {
+            send(GenerationEvent.Failed(Backend.CLOUD,
+                GenerationError(GenerationErrorType.INPUT_BUDGET_EXCEEDED, error.message.orEmpty()), ""))
+            close()
+            return@callbackFlow
+        }
+        val identityObserver = if (manager != null) launch {
+            val expected = contextIdentity ?: requestedIdentity
+            manager.identity.first { it !== expected }
+            close(CancellationException("Account or session changed"))
+        } else null
+
         val request = ChatRequest(
             model = config.modelId.ifBlank { DEFAULT_DEEPSEEK_MODEL },
-            messages = messages
+            messages = messages,
+            temperature = params.temperature,
+            topP = params.topP,
+            maxTokens = params.maxTokens
         )
 
-        val call = api.streamChat(request)
+        val call = api.streamChat(request, "Bearer $cloudToken")
         val source = AtomicReference<BufferedReader?>()
         val readerJob = AtomicReference<kotlinx.coroutines.Job?>()
+        val lastProgress = AtomicLong(System.nanoTime())
+        val progressGuard = launch {
+            while (isActive && !terminal.get()) {
+                delay(minOf(1_000L, progressTimeoutMs.coerceAtLeast(1L)))
+                if ((System.nanoTime() - lastProgress.get()) / 1_000_000L >= progressTimeoutMs) {
+                    finish(GenerationEvent.Failed(Backend.CLOUD,
+                        GenerationError(GenerationErrorType.NETWORK, "云端长时间没有有效输出",
+                            SocketTimeoutException("No generation progress")), partialText.toString()))
+                    call.cancel()
+                    break
+                }
+            }
+        }
 
         call.enqueue(object : Callback<ResponseBody> {
             override fun onResponse(call: Call<ResponseBody>, response: Response<ResponseBody>) {
+                if (response.code() == 401) authTokenProvider.invalidateSession(cloudToken)
+                if (!isActive || authTokenProvider.currentToken() != cloudToken) {
+                    response.body()?.close()
+                    response.errorBody()?.close()
+                    close(CancellationException("Account or session changed"))
+                    return
+                }
                 if (!response.isSuccessful) {
                     response.errorBody()?.close()
                     Log.e(TAG, "Backend error ${response.code()}")
-                    trySend(
+                    finish(
                         GenerationEvent.Failed(
                             backend = Backend.CLOUD,
                             error = GenerationError(
@@ -93,13 +167,12 @@ class CloudChatRepository @Inject constructor(
                             partialText = partialText.toString()
                         )
                     )
-                    close()
                     return
                 }
 
                 val body = response.body()
                 if (body == null) {
-                    trySend(
+                    finish(
                         GenerationEvent.Failed(
                             backend = Backend.CLOUD,
                             error = GenerationError(
@@ -109,7 +182,6 @@ class CloudChatRepository @Inject constructor(
                             partialText = partialText.toString()
                         )
                     )
-                    close()
                     return
                 }
 
@@ -128,21 +200,26 @@ class CloudChatRepository @Inject constructor(
                     val gson = Gson()
                     var receivedDone = false
                     try {
-                        var line: String? = bodyReader.readLine()
+                        val frames = SseDataReader(bodyReader)
+                        var line: String? = frames.readData()
                         while (line != null) {
                             currentCoroutineContext().ensureActive()
-                            if (line.startsWith("data:")) {
-                                val jsonStr = line.substring(5).trim()
+                            if (line.isNotBlank()) {
+                                val jsonStr = line.trim()
 
                                 if (jsonStr == "[DONE]") {
                                     receivedDone = true
                                     break
                                 }
 
-                                runCatching {
-                                    val chatResponse = gson.fromJson(jsonStr, ChatResponse::class.java)
-                                    chatResponse.choices.firstOrNull()?.delta?.content
-                                }.getOrNull()?.takeIf { it.isNotEmpty() }?.let { content ->
+                                val content = try {
+                                    gson.fromJson(jsonStr, ChatResponse::class.java)
+                                        ?.choices?.firstOrNull()?.delta?.content
+                                } catch (error: Exception) {
+                                    throw java.io.IOException("Invalid SSE payload", error)
+                                }
+                                content?.takeIf { it.isNotEmpty() }?.let { content ->
+                                    lastProgress.set(System.nanoTime())
                                     if (firstTokenAt == null) {
                                         firstTokenAt = System.nanoTime()
                                     }
@@ -150,12 +227,12 @@ class CloudChatRepository @Inject constructor(
                                     send(GenerationEvent.Delta(content))
                                 }
                             }
-                            line = bodyReader.readLine()
+                            line = frames.readData()
                         }
                         val totalLatencyMs = (System.nanoTime() - startedAt) / 1_000_000L
                         val outputTokenCount = ConservativeTokenizer.countTokens(partialText.toString())
                         if (receivedDone) {
-                            trySend(
+                            finish(
                                 GenerationEvent.Completed(
                                     GenerationMetrics(
                                         firstTokenLatencyMs = firstTokenAt?.let {
@@ -168,7 +245,7 @@ class CloudChatRepository @Inject constructor(
                                 )
                             )
                         } else {
-                            trySend(
+                            finish(
                                 GenerationEvent.Failed(
                                     backend = Backend.CLOUD,
                                     error = GenerationError(
@@ -182,13 +259,12 @@ class CloudChatRepository @Inject constructor(
                                 )
                             )
                         }
-                        close()
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
                         currentCoroutineContext().ensureActive()
-                        Log.e(TAG, "DeepSeek stream read error", e)
-                        trySend(
+                        Log.e(TAG, "Cloud stream read failed: ${e.javaClass.simpleName}")
+                        finish(
                             GenerationEvent.Failed(
                                 backend = Backend.CLOUD,
                                 error = GenerationError(
@@ -199,7 +275,6 @@ class CloudChatRepository @Inject constructor(
                                 partialText = partialText.toString()
                             )
                         )
-                        close()
                     } finally {
                         bodyReader.close()
                     }
@@ -210,7 +285,7 @@ class CloudChatRepository @Inject constructor(
                 if (error is CancellationException) {
                     close(error)
                 } else {
-                    trySend(
+                    finish(
                         GenerationEvent.Failed(
                             backend = Backend.CLOUD,
                             error = GenerationError(
@@ -221,17 +296,19 @@ class CloudChatRepository @Inject constructor(
                             partialText = partialText.toString()
                         )
                     )
-                    close()
                 }
             }
         })
 
         awaitClose {
+            progressGuard.cancel()
+            identityObserver?.cancel()
             call.cancel()
             readerJob.get()?.cancel()
             source.get()?.close()
         }
-    }.flowOn(Dispatchers.IO)
+        }.flowOn(Dispatchers.IO)
+    }
 
     suspend fun generatePersonaProfile(keywords: String): String {
         val systemPrompt = """
@@ -266,35 +343,9 @@ class CloudChatRepository @Inject constructor(
         return fullResponseBuilder.toString()
     }
 
-    private fun buildMessages(
-        systemPrompt: String,
-        userMessage: String,
-        history: List<ChatMessage>
-    ): List<MessageDto> {
-        return buildList {
-            add(MessageDto("system", systemPrompt))
-            history
-                .filter { it.content.isNotBlank() && it.role != "system" }
-                .takeLast(CLOUD_HISTORY_LIMIT)
-                .forEach { message ->
-                    add(
-                        MessageDto(
-                            role = when (message.role) {
-                                "assistant" -> "assistant"
-                                else -> "user"
-                            },
-                            content = message.content
-                        )
-                    )
-                }
-            add(MessageDto("user", userMessage))
-        }
-    }
-
     private companion object {
         const val TAG = "CloudChatRepository"
         const val DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash"
-        const val CLOUD_HISTORY_LIMIT = 12
     }
 }
 

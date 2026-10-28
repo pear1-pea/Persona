@@ -17,7 +17,8 @@ sealed interface GenerationEvent {
     data class Failed(
         val backend: Backend,
         val error: GenerationError,
-        val partialText: String
+        val partialText: String,
+        val fallbackPlanned: Boolean = false
     ) : GenerationEvent
 }
 
@@ -25,7 +26,12 @@ data class GenerationMetrics(
     val firstTokenLatencyMs: Long?,
     val totalLatencyMs: Long,
     val outputTokens: Int,
-    val tokensPerSecond: Double
+    val tokensPerSecond: Double,
+    val nativeInputTokens: Long? = null,
+    val nativeOutputTokens: Long? = null,
+    val prefillMicros: Long? = null,
+    val decodeMicros: Long? = null,
+    val samplingMicros: Long? = null
 )
 
 enum class StopReason {
@@ -49,5 +55,6 @@ enum class GenerationErrorType {
     MODEL_LOAD_FAILED,
     MODEL_RUNTIME,
     EMPTY_RESPONSE,
+    INPUT_BUDGET_EXCEEDED,
     UNKNOWN
 }

@@ -16,6 +16,10 @@ python tools/model-packager/generate_manifest.py `
 
 Expected: `manifest.json` + `READY` are created; the manifest lists every regular file
 with size and SHA-256.
+`minRamGb` is package admission metadata, not proof of device compatibility. This
+example's value of 4 does not claim verified 4 GB local inference support. Physical
+4 GB acceptance is deferred until actual user demand and does not block current P1;
+complete this flow, including SAF UI import, on the current validation device.
 
 ## 2. Validate
 

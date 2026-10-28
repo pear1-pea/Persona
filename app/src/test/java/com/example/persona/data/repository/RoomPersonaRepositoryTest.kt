@@ -1,5 +1,10 @@
 package com.example.persona.data.repository
 
+import com.example.persona.core.auth.SessionTokenStore
+import com.example.persona.core.auth.StoredSession
+import com.example.persona.data.remote.AuthApi
+import com.example.persona.data.remote.dto.AuthSessionDto
+import com.example.persona.data.remote.dto.AuthUserDto
 import com.example.persona.core.auth.AuthManager
 import com.example.persona.data.local.dao.PersonaDao
 import com.example.persona.data.local.entity.PersonaEntity
@@ -16,11 +21,14 @@ import org.mockito.kotlin.any
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
+import org.mockito.kotlin.never
 
 class RoomPersonaRepositoryTest {
 
     private val dao: PersonaDao = mock()
-    private val authManager: AuthManager = mock()
+    private val tokenStore: SessionTokenStore = mock()
+    private val authApi: AuthApi = mock()
+    private lateinit var authManager: AuthManager
     private lateinit var repo: RoomPersonaRepository
 
     private val personaEntity = PersonaEntity("p1", "Test", "avatar", "post", "backstory", "user-1")
@@ -29,7 +37,8 @@ class RoomPersonaRepositoryTest {
 
     @Before
     fun setUp() {
-        whenever(authManager.currentRepoId).thenReturn("user-1")
+        whenever(tokenStore.read()).thenReturn(StoredSession("token", "user-1", "user-1@test.dev"))
+        authManager = AuthManager(authApi, tokenStore, mock())
         repo = RoomPersonaRepository(dao, authManager)
     }
 
@@ -79,5 +88,24 @@ class RoomPersonaRepositoryTest {
         repo.addPersona("NewPersona", listOf("A", "B"), "New backstory", isPublic = true)
 
         verify(dao).insertCompletePersona(any<PersonaEntity>(), any<List<TraitEntity>>())
+    }
+
+    @Test
+    fun `room listing excludes other accounts even when their persona is public`() = runTest {
+        whenever(dao.getAllPersonas()).thenReturn(listOf(
+            personaWithTraits,
+            personaWithTraits.copy(persona = personaEntity.copy(id = "other", creatorId = "user-2")),
+            personaWithTraits.copy(persona = personaEntity.copy(id = "seed", creatorId = "system"))
+        ))
+        assertEquals(listOf("p1", "seed"), repo.getPersonas().map { it.id })
+    }
+
+    @Test
+    fun `shared system seed cannot be edited through own persona update`() = runTest {
+        whenever(dao.getPersonaById("seed", "user-1")).thenReturn(
+            personaWithTraits.copy(persona = personaEntity.copy(id = "seed", creatorId = "system"))
+        )
+        repo.updatePersona("seed", "changed", emptyList(), "changed", false)
+        verify(dao, never()).insertCompletePersona(any(), any())
     }
 }

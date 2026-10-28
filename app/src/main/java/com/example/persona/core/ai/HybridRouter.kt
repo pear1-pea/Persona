@@ -40,13 +40,15 @@ data class RoutingInput(
     val batteryPercent: Int,
     val thermalStatus: ThermalStatus,
     val powerSaveMode: Boolean,
-    val latencyBudgetMs: Long?,
-    val recentLocalFailureRate: Float
+    val localRetryBlocked: Boolean,
+    val localEnabled: Boolean = true
 )
 
 data class RoutingDecision(
     val route: Route,
-    val reasons: List<String>
+    val reasons: List<String>,
+    val isExecutable: Boolean = true,
+    val cloudAllowed: Boolean = route != Route.LOCAL
 ) {
     val isLocalPreferred: Boolean
         get() = route == Route.LOCAL || route == Route.LOCAL_THEN_CLOUD
@@ -55,31 +57,6 @@ data class RoutingDecision(
 @Singleton
 class HybridRouter @Inject constructor() {
     fun decide(input: RoutingInput): RoutingDecision {
-        if (input.forceCloud) {
-            return RoutingDecision(Route.CLOUD_ONLY, listOf("@cloud 强制覆盖所有本地策略"))
-        }
-
-        if (input.localOnly) {
-            return RoutingDecision(
-                Route.LOCAL,
-                listOf("用户明确选择仅本地生成，不允许云端 fallback")
-            )
-        }
-
-        if (input.localAdmission == ModelAdmission.BLOCKED) {
-            return RoutingDecision(
-                Route.CLOUD_ONLY,
-                buildList {
-                    add("本地模型准入状态为 BLOCKED")
-                    if (input.privacyLevel == PrivacyLevel.PRIVATE ||
-                        input.privacyLevel == PrivacyLevel.SENSITIVE
-                    ) {
-                        add("本地模型不可用，无法满足端侧隐私策略")
-                    }
-                }
-            )
-        }
-
         val thermalHigh = input.thermalStatus in setOf(
             ThermalStatus.SEVERE,
             ThermalStatus.CRITICAL,
@@ -87,55 +64,30 @@ class HybridRouter @Inject constructor() {
             ThermalStatus.SHUTDOWN
         )
         val batteryLow = input.batteryPercent in 0..15
-        val recentFailure = input.recentLocalFailureRate >= RECENT_FAILURE_RISK_THRESHOLD
-
-        if (input.privacyLevel == PrivacyLevel.SENSITIVE ||
-            input.privacyLevel == PrivacyLevel.PRIVATE
-        ) {
-            return RoutingDecision(
-                Route.LOCAL,
-                listOf("内容隐私级别为 ${input.privacyLevel}，默认留在端侧")
-            )
+        val privateRequest = input.localOnly || input.privacyLevel in setOf(PrivacyLevel.PRIVATE, PrivacyLevel.SENSITIVE)
+        val cloudAllowed = !privateRequest && input.networkState != NetworkState.OFFLINE &&
+            (input.networkState != NetworkState.METERED || input.forceCloud)
+        val unavailable = buildList {
+            if (!input.localEnabled) add("本地推理已禁用")
+            if (input.localAdmission == ModelAdmission.BLOCKED) add("本地模型准入状态为 BLOCKED")
+            if (input.localRetryBlocked) add("本地模型仍在失败退避期或需要修复")
+            if (thermalHigh) add("设备热状态偏高")
+            if (input.localAdmission == ModelAdmission.RISKY) {
+                if (batteryLow) add("当前电量偏低")
+                if (input.powerSaveMode) add("设备处于省电模式")
+            }
         }
-
-        if (input.networkState == NetworkState.OFFLINE) {
-            return RoutingDecision(
-                Route.LOCAL,
-                listOf("当前网络离线，使用本地模型")
-            )
+        val constraints = buildList {
+            if (privateRequest) add("仅本地或隐私约束禁止云端上传：${input.privacyLevel}")
+            if (input.networkState == NetworkState.OFFLINE) add("当前网络离线")
+            if (input.networkState == NetworkState.METERED && !input.forceCloud) add("当前网络按流量计费，禁止自动使用云端")
         }
-
-        if (input.localAdmission == ModelAdmission.RISKY &&
-            (batteryLow || thermalHigh || input.powerSaveMode)
-        ) {
-            return RoutingDecision(
-                Route.CLOUD_ONLY,
-                buildList {
-                    add("本地模型准入状态为 RISKY")
-                    if (batteryLow) add("当前电量偏低")
-                    if (thermalHigh) add("设备热状态偏高")
-                    if (input.powerSaveMode) add("设备处于省电模式")
-                    add("避免在当前设备状态加载本地模型")
-                }
-            )
+        if (!cloudAllowed) {
+            return RoutingDecision(Route.LOCAL, constraints + unavailable,
+                isExecutable = unavailable.isEmpty(), cloudAllowed = false)
         }
-
-        if (input.networkState == NetworkState.METERED) {
-            return RoutingDecision(
-                Route.LOCAL,
-                listOf("当前网络按流量计费，避免自动使用云端或云端 fallback")
-            )
-        }
-
-        if (recentFailure) {
-            return RoutingDecision(
-                Route.CLOUD_ONLY,
-                listOf(
-                    "近期本地失败率较高（${input.recentLocalFailureRate.formatPercent()}）",
-                    "本次默认使用云端"
-                )
-            )
-        }
+        if (input.forceCloud) return RoutingDecision(Route.CLOUD_ONLY, listOf("用户明确选择云端，隐私与网络约束允许"))
+        if (unavailable.isNotEmpty()) return RoutingDecision(Route.CLOUD_ONLY, unavailable)
 
         if (input.taskComplexity == TaskComplexity.COMPLEX) {
             return RoutingDecision(
@@ -144,25 +96,9 @@ class HybridRouter @Inject constructor() {
             )
         }
 
-        if (input.latencyBudgetMs != null && input.latencyBudgetMs <= LOW_LATENCY_BUDGET_MS) {
-            return RoutingDecision(
-                Route.LOCAL_THEN_CLOUD,
-                listOf("延迟预算较低，优先尝试本地模型")
-            )
-        }
-
         return RoutingDecision(
             Route.LOCAL_THEN_CLOUD,
             listOf("常规任务，本地优先并允许云端兜底")
         )
-    }
-
-    private fun Float.formatPercent(): String {
-        return "%.0f%%".format(this * 100f)
-    }
-
-    private companion object {
-        const val LOW_LATENCY_BUDGET_MS = 1_500L
-        const val RECENT_FAILURE_RISK_THRESHOLD = 0.34f
     }
 }
