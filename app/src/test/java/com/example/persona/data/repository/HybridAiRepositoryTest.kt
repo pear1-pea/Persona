@@ -115,6 +115,46 @@ class HybridAiRepositoryTest {
     private fun runTest(block: suspend TestScope.() -> Unit) = observerScope.runTest(testBody = block)
 
     @Test
+    fun `a ready model is not charged its weights twice when memory falls after loading`() = runTest {
+        modelState.value = sampleModel().copy(totalSizeBytes = 700_000_000L)
+        whenever(localModelManager.deviceCapability()).thenReturn(deviceProfile().copy(availableMemBytes = 1_100_000_000L))
+        assertTrue(repository.initializeLocalModel())
+        whenever(localModelManager.deviceCapability()).thenReturn(deviceProfile().copy(availableMemBytes = 500_000_000L))
+        whenever(localEngine.streamResponse(any(), any(), any(), any())).thenReturn(flowOf(delta("local"), completed()))
+        val decision = repository.selectRouteForGeneration(false, false, PrivacyLevel.NORMAL, TaskComplexity.SIMPLE)
+        assertTrue(decision.isLocalPreferred)
+        val session = GenerationSession().apply { bindRoutingDecision(decision) }
+        val events = repository.streamResponse(HybridAiRepository.Mode.LOCAL, session, "rules", "hello",
+            route = decision.route).toList()
+        assertEquals(listOf("local"), events.deltaTexts())
+        verify(cloudRepository, never()).streamResponseWithParams(any(), any(), any(), any())
+    }
+
+    @Test
+    fun `execution admission failure reaches cloud only when fallback remains authorized`() = runTest {
+        assertTrue(repository.initializeLocalModel())
+        whenever(localModelManager.deviceCapability()).thenReturn(deviceProfile().copy(availableMemBytes = 32_000_000L))
+        whenever(cloudRepository.streamResponseWithParams(any(), any(), any(), any())).thenReturn(flowOf(delta("cloud"), completed()))
+        val session = GenerationSession().apply {
+            bindRoutingDecision(RoutingDecision(Route.LOCAL_THEN_CLOUD, emptyList(), cloudAllowed = true))
+        }
+        val events = repository.streamResponse(HybridAiRepository.Mode.LOCAL, session, "rules", "hello").toList()
+        assertTrue((events.first() as GenerationEvent.Failed).fallbackPlanned)
+        assertEquals(listOf("cloud"), events.deltaTexts())
+        verify(localEngine, never()).streamResponse(any(), any(), any(), any())
+    }
+
+    @Test
+    fun `execution admission failure cannot upload private input`() = runTest {
+        assertTrue(repository.initializeLocalModel())
+        whenever(localModelManager.deviceCapability()).thenReturn(deviceProfile().copy(availableMemBytes = 32_000_000L))
+        val session = GenerationSession().apply { bindRoutingDecision(RoutingDecision(Route.LOCAL, emptyList())) }
+        val events = repository.streamResponse(HybridAiRepository.Mode.LOCAL, session, "rules", "private", route = Route.LOCAL).toList()
+        assertFalse((events.single() as GenerationEvent.Failed).fallbackPlanned)
+        verify(cloudRepository, never()).streamResponseWithParams(any(), any(), any(), any())
+    }
+
+    @Test
     fun `unavailable private request never initializes or reaches cloud`() = runTest {
         modelState.value = null
         val decision = repository.selectRouteForGeneration(true, true, PrivacyLevel.PRIVATE, TaskComplexity.SIMPLE)

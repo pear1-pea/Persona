@@ -54,13 +54,15 @@ internal fun evaluateModelAdmission(
     modelSizeBytes: Long,
     contextWindow: Int,
     reservedOutputTokens: Int,
-    recentFailureCount: Int
+    recentFailureCount: Int,
+    modelAlreadyLoaded: Boolean = false
 ): ModelAdmissionReport {
     val blockedReasons = mutableListOf<String>()
     val riskReasons = mutableListOf<String>()
 
     // This is a minimum load guard, not a prediction of the model's peak memory.
-    val minimumAvailableBytes = maxOf(modelSizeBytes, 128L * 1024L * 1024L)
+    val minimumAvailableBytes = if (modelAlreadyLoaded) 128L * 1024L * 1024L
+        else maxOf(modelSizeBytes, 128L * 1024L * 1024L)
     if (profile.availableMemBytes >= 0 && profile.availableMemBytes < minimumAvailableBytes) {
         blockedReasons += "当前可用内存不足以安全加载模型，请释放资源后重试"
     }

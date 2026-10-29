@@ -78,6 +78,7 @@ fun classifyLocalModelFailure(error: Throwable?): LocalModelFailureType {
         else -> {
             val message = error.message.orEmpty()
             when {
+                message == "MNN generation configuration/load failed" -> LocalModelFailureType.TRANSIENT
                 message.contains("config", ignoreCase = true) ||
                     message.contains("tokenizer", ignoreCase = true) ||
                     message.contains("no such file", ignoreCase = true) ||

@@ -148,6 +148,12 @@ class LocalModelFailureTest {
     }
 
     @Test
+    fun `ambiguous native load failure does not permanently mark a model corrupt`() {
+        assertEquals(LocalModelFailureType.TRANSIENT,
+            classifyLocalModelFailure(IllegalStateException("MNN generation configuration/load failed")))
+    }
+
+    @Test
     fun `non cancellation failures retain their classification`() {
         val cases = listOf(
             null to LocalModelFailureType.UNKNOWN,

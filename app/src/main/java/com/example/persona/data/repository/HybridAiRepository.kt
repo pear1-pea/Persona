@@ -296,9 +296,13 @@ class HybridAiRepository internal constructor(
                 return@flow
             }
             var registration: LocalGeneration? = null
+            var blockedByActiveGeneration = false
             try {
                 val generation = withModelOperation {
-                    if (activeGeneration != null || !ensureLocalReadyLocked()) {
+                    if (activeGeneration != null) {
+                        blockedByActiveGeneration = true
+                        null
+                    } else if (!ensureLocalReadyLocked()) {
                         null
                     } else {
                         localModelManager.currentModel.value?.let { model ->
@@ -311,6 +315,11 @@ class HybridAiRepository internal constructor(
                     }
                 }
                 if (generation == null) {
+                    session.stopReason?.let {
+                        emit(GenerationEvent.Stopped(it, ""))
+                        return@flow
+                    }
+                    val fallback = !blockedByActiveGeneration && canFallbackToCloud(session, route)
                     emit(
                         GenerationEvent.Failed(
                             backend = Backend.MNN,
@@ -318,9 +327,15 @@ class HybridAiRepository internal constructor(
                                 type = GenerationErrorType.MODEL_NOT_READY,
                                 message = "本地模型不可用或仍有生成任务"
                             ),
-                            partialText = ""
+                            partialText = "",
+                            fallbackPlanned = fallback
                         )
                     )
+                    currentCoroutineContext().ensureActive()
+                    if (fallback && canFallbackToCloud(session, route)) {
+                        _activeMode.value = Mode.CLOUD
+                        emitAll(cloudRepository.streamResponseWithParams(systemPrompt, userMessage, history, params))
+                    }
                     return@flow
                 }
                 generation.stopReason?.let { reason ->
@@ -393,11 +408,7 @@ class HybridAiRepository internal constructor(
                 if (stopReason != null && !terminalDelivered) {
                     emit(GenerationEvent.Stopped(stopReason, localPartial.toString()))
                 } else if (!terminalDelivered && localFailure != null && stopReason == null &&
-                    route == Route.LOCAL_THEN_CLOUD && session.routingDecision?.cloudAllowed != false &&
-                    routingContextProvider.networkState() !in setOf(
-                        com.example.persona.core.ai.NetworkState.OFFLINE,
-                        com.example.persona.core.ai.NetworkState.METERED
-                    )) {
+                    canFallbackToCloud(session, route)) {
                     Log.e(TAG, "Local generation failed; falling back to cloud")
                     generation.model.takeUnless { localFailure.error.type == GenerationErrorType.INPUT_BUDGET_EXCEEDED }?.let { model ->
                         val cause = localFailure.error.cause
@@ -411,7 +422,7 @@ class HybridAiRepository internal constructor(
                     _activeMode.value = Mode.CLOUD
                     emit(localFailure.copy(fallbackPlanned = true))
                     currentCoroutineContext().ensureActive()
-                    if (session.stopReason != null) return@flow
+                    if (!canFallbackToCloud(session, route)) return@flow
                     emitAll(cloudRepository.streamResponseWithParams(systemPrompt, userMessage, history, params))
                 } else if (!terminalDelivered && localFailure != null && stopReason == null) {
                     generation.model.takeUnless { localFailure.error.type == GenerationErrorType.INPUT_BUDGET_EXCEEDED }?.let { model ->
@@ -438,6 +449,14 @@ class HybridAiRepository internal constructor(
     private suspend fun ensureLocalReady(): Boolean {
         return withModelOperation { ensureLocalReadyLocked() }
     }
+
+    private fun canFallbackToCloud(session: GenerationSession, route: Route): Boolean =
+        session.stopReason == null && route == Route.LOCAL_THEN_CLOUD &&
+            session.routingDecision?.cloudAllowed != false &&
+            routingContextProvider.networkState() !in setOf(
+                com.example.persona.core.ai.NetworkState.OFFLINE,
+                com.example.persona.core.ai.NetworkState.METERED
+            )
 
     private suspend fun ensureLocalReadyLocked(): Boolean {
         var model = localModelManager.currentModel.value
@@ -551,7 +570,8 @@ class HybridAiRepository internal constructor(
         profile = localModelManager.deviceCapability(), requiredAbis = model.requiredAbis,
         minSdk = model.minSdk, minRamGb = model.minRamGb, modelSizeBytes = model.totalSizeBytes,
         contextWindow = model.contextWindow, reservedOutputTokens = 512,
-        recentFailureCount = localModelManager.recentFailureCount(model.id)
+        recentFailureCount = localModelManager.recentFailureCount(model.id),
+        modelAlreadyLoaded = loadedModelDir == model.modelDir && localAiEngine.state.value == EngineState.Ready
     )
 
     private fun handleCurrentModelChanged(model: InstalledModel?) {

@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <functional>
 #include <mutex>
+#include <new>
 #include <ostream>
 #include <sstream>
 #include <streambuf>
@@ -243,7 +244,7 @@ struct MnnSession {
 
 bool configureGeneration(JNIEnv* env, MnnSession* session, const persona::GenerationConfig& config) {
     const char* errorClass = "java/lang/IllegalStateException";
-    const char* message = "MNN generation configuration/load failed";
+    const char* message = "MNN runtime load failed";
     if (!config.valid()) {
         errorClass = "java/lang/IllegalArgumentException";
         message = "Invalid MNN generation parameters";
@@ -251,6 +252,9 @@ bool configureGeneration(JNIEnv* env, MnnSession* session, const persona::Genera
         try {
             if (persona::configureGeneration(session->llm, session->configPath,
                     session->appliedConfig, session->samplerRevision, config)) return true;
+        } catch (const std::bad_alloc&) {
+            errorClass = "java/lang/OutOfMemoryError";
+            message = "MNN runtime allocation failed";
         } catch (const std::exception&) {
             // Only stage information crosses JNI; upstream errors may contain paths.
         }
