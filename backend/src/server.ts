@@ -16,6 +16,8 @@ import {
 } from "./validation.js"
 import { createSessionToken, hashSessionToken, normalizeEmail } from "./security.js"
 import { personaDto } from "./dto.js"
+import { reserveChatBudget, type ChatBudget } from "./chat-budget.js"
+import { ChatStream, onceDrain } from "./chat-stream.js"
 
 const port = Number(process.env.PORT ?? 8080)
 const databaseUrl = requiredEnv("DATABASE_URL")
@@ -56,7 +58,6 @@ type SessionUser = AccountUser & {
 
 type PasswordRow = QueryResultRow & { password_hash: string }
 type RateLimitRow = QueryResultRow & { request_count: number }
-type UsageRow = QueryResultRow & { usage_amount: number }
 
 const dummyPasswordHash = await argon2.hash("persona-invalid-password", { type: argon2.argon2id })
 
@@ -343,29 +344,6 @@ async function allowRequest(
   return result.rows[0].request_count <= limit
 }
 
-async function allowDailyUsage(
-  bucketKey: string,
-  amount: number,
-  limit: number
-): Promise<boolean> {
-  const result = await pool.query<UsageRow>(
-    `INSERT INTO usage_limits (bucket_key, window_start, usage_amount)
-     VALUES ($1, NOW(), $2)
-     ON CONFLICT (bucket_key) DO UPDATE SET
-       window_start = CASE
-         WHEN usage_limits.window_start < NOW() - INTERVAL '24 hours' THEN NOW()
-         ELSE usage_limits.window_start
-       END,
-       usage_amount = CASE
-         WHEN usage_limits.window_start < NOW() - INTERVAL '24 hours' THEN $2
-         ELSE usage_limits.usage_amount + $2
-       END
-     RETURNING usage_amount::double precision AS usage_amount`,
-    [bucketKey, amount]
-  )
-  return result.rows[0].usage_amount <= limit
-}
-
 function acquireChatSlot(userId: string): boolean {
   const userCount = activeChatByUser.get(userId) ?? 0
   if (userCount >= maxChatConcurrentPerUser || activeChatGlobal >= maxChatConcurrentGlobal) {
@@ -485,18 +463,30 @@ async function handleChat(request: IncomingMessage, response: ServerResponse, us
   const input = chatSchema.parse(await readJson(request))
   if (input.model !== deepSeekModelId) throw httpError(400, "model_not_allowed")
   const inputChars = input.messages.reduce((total, message) => total + message.content.length, 0)
-  if (!(await allowDailyUsage(`chat-input:${user.id}`, inputChars, maxDailyInputChars)) ||
-      !(await allowDailyUsage(`chat-output:${user.id}`, maxOutputTokens, maxDailyOutputTokens))) {
-    throw httpError(429, "daily_budget_exceeded")
-  }
+  const outputTokens = Math.min(input.max_tokens ?? maxOutputTokens, maxOutputTokens)
   if (!acquireChatSlot(user.id)) throw httpError(429, "too_many_concurrent_chats")
+
   const abortController = new AbortController()
-  const closeUpstream = () => abortController.abort()
+  const closeUpstream = () => abortController.abort(new Error("downstream_closed"))
+  const failUpstream = (error: Error) => abortController.abort(error)
   request.once("aborted", closeUpstream)
   response.once("close", closeUpstream)
+  response.once("error", failUpstream)
   const timeoutController = new AbortController()
-  const timeout = setTimeout(() => timeoutController.abort(), chatUpstreamTimeoutMs)
+  const timeout = setTimeout(() => timeoutController.abort(httpError(504, "upstream_timeout")), chatUpstreamTimeoutMs)
+  const signal = AbortSignal.any([abortController.signal, timeoutController.signal])
+  const stream = new ChatStream()
+  let budget: ChatBudget | null = null
+  let dispatched = false
+  let rejected = false
   try {
+    if (request.aborted || response.destroyed) closeUpstream()
+    signal.throwIfAborted()
+    budget = await reserveChatBudget(pool, user.id, inputChars, outputTokens, maxDailyInputChars, maxDailyOutputTokens)
+    if (!budget) throw httpError(429, "daily_budget_exceeded")
+    signal.throwIfAborted()
+    // Once dispatched, transport failures cannot prove that generation was free.
+    dispatched = true
     const upstream = await fetch(`${deepSeekBaseUrl}/chat/completions`, {
       method: "POST",
       headers: {
@@ -507,42 +497,57 @@ async function handleChat(request: IncomingMessage, response: ServerResponse, us
         model: deepSeekModelId,
         messages: input.messages,
         stream: true,
-        temperature: 0.7,
-        top_p: 0.8,
-        thinking: { type: "disabled" },
-        max_tokens: maxOutputTokens
+        temperature: input.temperature ?? 0.7,
+        top_p: input.top_p ?? 0.8,
+        thinking: input.thinking ?? { type: "disabled" },
+        max_tokens: outputTokens,
+        stream_options: { include_usage: true }
       }),
-      signal: AbortSignal.any([abortController.signal, timeoutController.signal])
-    }).catch(error => {
-      if (timeoutController.signal.aborted) throw httpError(504, "upstream_timeout")
-      throw error
+      signal
     })
-    const downstreamStatus = upstream.status === 401 || upstream.status === 403
-      ? 502
-      : upstream.status
-    response.writeHead(downstreamStatus, {
-      "cache-control": "no-cache",
-      connection: "keep-alive",
-      "content-type": "text/event-stream"
-    })
-    if (!upstream.body) {
-      response.end()
-      return
+    if (!upstream.ok) {
+      rejected = true
+      const status = upstream.status === 401 || upstream.status === 403 ? 502 : upstream.status
+      const retryAfter = upstream.headers.get("retry-after")
+      if (upstream.status === 429 && retryAfter) response.setHeader("retry-after", retryAfter)
+      throw httpError(status, upstream.status === 429 ? "upstream_rate_limited" : "upstream_error")
     }
+    if (!upstream.body || upstream.headers.get("content-type")?.split(";")[0].trim().toLowerCase() !== "text/event-stream") {
+      throw httpError(502, "upstream_invalid_response")
+    }
+    response.statusCode = 200
+    response.setHeader("cache-control", "no-cache")
+    response.setHeader("connection", "keep-alive")
+    response.setHeader("content-type", "text/event-stream")
+    response.setHeader("x-accel-buffering", "no")
     for await (const chunk of upstream.body) {
-      if (!response.write(chunk)) await onceDrain(response)
+      signal.throwIfAborted()
+      try { stream.push(chunk) } catch { throw httpError(502, "upstream_invalid_stream") }
+      if (!response.write(chunk)) await onceDrain(response, signal)
+      if (stream.done) break
     }
+    try { stream.finish() } catch { throw httpError(502, "upstream_incomplete_stream") }
     response.end()
+  } catch (error) {
+    if (timeoutController.signal.aborted && !abortController.signal.aborted) throw timeoutController.signal.reason
+    throw error
   } finally {
     clearTimeout(timeout)
+    abortController.abort()
     request.off("aborted", closeUpstream)
     response.off("close", closeUpstream)
+    response.off("error", failUpstream)
     releaseChatSlot(user.id)
+    if (budget) {
+      const free = !dispatched || rejected
+      try {
+        await budget.settle(free ? 0 : inputChars, free ? 0 : stream.completionTokens ?? outputTokens)
+      } catch (error) {
+        console.error("chat_budget_settlement_failed")
+        throw error
+      }
+    }
   }
-}
-
-function onceDrain(response: ServerResponse): Promise<void> {
-  return new Promise(resolve => response.once("drain", resolve))
 }
 
 async function route(request: IncomingMessage, response: ServerResponse): Promise<void> {

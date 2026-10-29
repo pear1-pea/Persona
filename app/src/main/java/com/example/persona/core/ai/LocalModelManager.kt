@@ -113,7 +113,8 @@ class LocalModelManager @Inject constructor(
         error: Throwable? = null,
         type: LocalModelFailureType = LocalModelFailureType.UNKNOWN
     ) {
-        if (type == LocalModelFailureType.USER_CANCELLED) return
+        if (error is kotlinx.coroutines.CancellationException || type == LocalModelFailureType.USER_CANCELLED) return
+        val failureType = if (type == LocalModelFailureType.UNKNOWN) classifyLocalModelFailure(error) else type
         val key = failureKey(model.id)
         val now = System.currentTimeMillis()
         val previousFailureAt = preferences.getLong(failureTimeKey(model.id), 0L)
@@ -127,7 +128,7 @@ class LocalModelManager @Inject constructor(
         preferences.edit()
             .putInt(key, (previous + 1).coerceAtMost(MAX_RECORDED_FAILURES))
             .putLong(failureTimeKey(model.id), now)
-            .putString(failureTypeKey(model.id), type.name)
+            .putString(failureTypeKey(model.id), failureType.name)
             .putString(failureProfileKey(model.id), deviceCapability().toDiagnosticText())
             .putString(failureMessageKey(model.id), error?.message.orEmpty())
             .apply()
@@ -140,18 +141,24 @@ class LocalModelManager @Inject constructor(
     fun recentFailure(modelId: String): LocalModelFailure? {
         val lastFailureAt = preferences.getLong(failureTimeKey(modelId), 0L)
         val count = preferences.getInt(failureKey(modelId), 0)
-        if (lastFailureAt <= 0L || count <= 0 ||
-            System.currentTimeMillis() - lastFailureAt > FAILURE_WINDOW_MILLIS
-        ) {
+        if (lastFailureAt <= 0L || count <= 0) {
             return null
         }
         val type = preferences.getString(failureTypeKey(modelId), null)
             ?.let { runCatching { LocalModelFailureType.valueOf(it) }.getOrNull() }
             ?: LocalModelFailureType.UNKNOWN
-        return LocalModelFailure(count = count, lastFailureAtMillis = lastFailureAt, type = type)
+        val failure = LocalModelFailure(count = count, lastFailureAtMillis = lastFailureAt, type = type)
+        return failure.takeUnless { it.isExpired(System.currentTimeMillis(), FAILURE_WINDOW_MILLIS) }
     }
 
-    fun recentFailureCount(modelId: String): Int = recentFailure(modelId)?.count ?: 0
+    fun recentFailureCount(modelId: String): Int {
+        val failure = recentFailure(modelId) ?: return 0
+        return if (System.currentTimeMillis() - failure.lastFailureAtMillis > FAILURE_WINDOW_MILLIS) {
+            0
+        } else {
+            failure.count
+        }
+    }
 
     private fun clearLocalLoadFailureHistory(modelId: String) {
         preferences.edit()
@@ -229,6 +236,7 @@ class LocalModelManager @Inject constructor(
     }
 
     private fun scanModelReports(): List<ModelScanReport> {
+        packageInstaller.recoverStaging(modelsRoot())
         val capability = deviceCapability()
         return modelsRoot()
             .also { it.mkdirs() }

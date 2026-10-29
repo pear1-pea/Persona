@@ -9,6 +9,7 @@ import com.example.persona.core.util.SimpleDiffCallback
 import com.example.persona.databinding.ItemMessageReceivedBinding
 import com.example.persona.databinding.ItemMessageSentBinding
 import com.example.persona.domain.model.Message
+import com.example.persona.domain.model.MessageStatus
 
 class ChatAdapter(
     private val markdownHelper: MarkdownHelper
@@ -62,7 +63,13 @@ class ChatAdapter(
         if (holder is SentViewHolder) {
             holder.binding.tvContent.text = message.content
         } else if (holder is ReceivedViewHolder) {
-            markdownHelper.setMarkdown(holder.binding.tvContent, message.content)
+            if (message.status == MessageStatus.GENERATING) {
+                holder.binding.tvContent.text = message.content
+                holder.binding.tvContent.linksClickable = false
+                holder.binding.tvContent.movementMethod = null
+            } else {
+                markdownHelper.setMarkdown(holder.binding.tvContent, message.content)
+            }
         }
     }
 

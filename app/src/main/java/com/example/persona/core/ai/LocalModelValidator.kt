@@ -1,6 +1,7 @@
 package com.example.persona.core.ai
 
 import com.google.gson.Gson
+import kotlinx.coroutines.CancellationException
 import java.io.File
 import java.security.MessageDigest
 import java.util.Locale
@@ -17,8 +18,10 @@ class LocalModelValidator @Inject constructor(
         modelDir: File,
         profile: DeviceProfile,
         requireReadyMarker: Boolean = true,
-        recentFailureCount: (String) -> Int = { 0 }
+        recentFailureCount: (String) -> Int = { 0 },
+        checkCancelled: () -> Unit = {}
     ): ModelScanReport {
+        checkCancelled()
         val scannedAtMillis = System.currentTimeMillis()
         val canonicalModelDir = runCatching { modelDir.canonicalFile }.getOrElse { modelDir }
         val manifestFile = if (symlinkChecker.isSymbolicLink(modelDir)) {
@@ -35,9 +38,11 @@ class LocalModelValidator @Inject constructor(
                 manifestRaw = manifestRaw,
                 profile = profile,
                 requireReadyMarker = requireReadyMarker,
-                recentFailureCount = recentFailureCount
+                recentFailureCount = recentFailureCount,
+                checkCancelled = checkCancelled
             )
         }.getOrElse { error ->
+            if (error is CancellationException) throw error
             ModelScanResult.Failed(error.message ?: "模型校验失败")
         }
 
@@ -56,7 +61,8 @@ class LocalModelValidator @Inject constructor(
         manifestRaw: String?,
         profile: DeviceProfile,
         requireReadyMarker: Boolean,
-        recentFailureCount: (String) -> Int
+        recentFailureCount: (String) -> Int,
+        checkCancelled: () -> Unit
     ): ModelScanResult {
         if (symlinkChecker.isSymbolicLink(modelDir)) {
             return ModelScanResult.Corrupted("模型目录不能是 symbolic link")
@@ -167,9 +173,13 @@ class LocalModelValidator @Inject constructor(
         validateManifestFiles(
             root = root,
             files = manifest.files,
-            requiredPaths = setOf(CONFIG_FILE, entry, tokenizer, llmWeight)
+            requiredPaths = setOf(CONFIG_FILE, entry, tokenizer, llmWeight),
+            checkCancelled = checkCancelled
         ).let { result ->
             if (result != null) return result
+        }
+        if (tokenizerFile.extension.equals("txt", ignoreCase = true) && tokenizerFile.hasCrLf(checkCancelled)) {
+            return ModelScanResult.Corrupted("tokenizer.txt 包含 CRLF，需恢复 LF 换行并重新生成 manifest")
         }
 
         val modelSizeBytes = root.directorySizeBytes()
@@ -202,14 +212,18 @@ class LocalModelValidator @Inject constructor(
                 requiredAbis = requiredAbis,
                 totalSizeBytes = modelSizeBytes
             ),
-            admission = admission
+            admission = admission.copy(
+                status = if (admission.status == ModelAdmission.SUPPORTED) ModelAdmission.RISKY else admission.status,
+                reasons = admission.reasons + UNVERIFIED_SOURCE_WARNING
+            )
         )
     }
 
     private fun validateManifestFiles(
         root: File,
         files: List<LocalModelManifestFile>?,
-        requiredPaths: Set<String>
+        requiredPaths: Set<String>,
+        checkCancelled: () -> Unit
     ): ModelScanResult? {
         if (files.isNullOrEmpty()) {
             return ModelScanResult.Corrupted("manifest 缺少 files 校验清单")
@@ -217,6 +231,7 @@ class LocalModelValidator @Inject constructor(
 
         val seenPaths = mutableSetOf<String>()
         files.forEach { expected ->
+            checkCancelled()
             val path = expected.path.requireRelativePath()
                 ?: return ModelScanResult.Corrupted("files.path 缺失或不安全")
             expected.role.requireField()
@@ -232,6 +247,9 @@ class LocalModelValidator @Inject constructor(
             if (!seenPaths.add(path)) {
                 return ModelScanResult.Corrupted("files 存在重复路径: $path")
             }
+            if (path == MANIFEST_FILE || path == READY_MARKER) {
+                return ModelScanResult.Corrupted("files 不能包含安装生成文件: $path")
+            }
             val file = root.resolveSafe(path)
                 ?: return ModelScanResult.Corrupted("files 路径不安全: $path")
 
@@ -239,7 +257,7 @@ class LocalModelValidator @Inject constructor(
             if (file.length() != expectedSize) {
                 return ModelScanResult.Corrupted("文件大小不匹配: $path")
             }
-            if (file.sha256() != expectedHash) {
+            if (file.sha256(checkCancelled) != expectedHash) {
                 return ModelScanResult.Corrupted("文件 SHA256 不匹配: $path")
             }
         }
@@ -255,11 +273,14 @@ class LocalModelValidator @Inject constructor(
 
     private fun String?.requireModelId(): String? {
         val value = requireField() ?: return null
-        return value.takeIf { MODEL_ID_REGEX.matches(it) }
+        return value.takeIf {
+            MODEL_ID_REGEX.matches(it) && it !in setOf(".", "..", ".staging", ".staging.lock")
+        }
     }
 
     private fun String?.requireRelativePath(): String? {
-        val value = requireField() ?: return null
+        val value = requireField()?.replace('\\', '/') ?: return null
+        if (Regex("^[A-Za-z]:").containsMatchIn(value) || value.any { it.code < 0x20 }) return null
         if (File(value).isAbsolute || value.startsWith("/") || value.startsWith("\\")) return null
         val parts = value.split('/', '\\')
         if (parts.any { it.isBlank() || it == "." || it == ".." }) return null
@@ -300,17 +321,34 @@ class LocalModelValidator @Inject constructor(
         return components
     }
 
-    private fun File.sha256(): String {
+    private fun File.sha256(checkCancelled: () -> Unit): String {
         val digest = MessageDigest.getInstance("SHA-256")
         inputStream().use { input ->
             val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
             while (true) {
+                checkCancelled()
                 val count = input.read(buffer)
                 if (count <= 0) break
                 digest.update(buffer, 0, count)
             }
         }
         return digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
+    }
+
+    private fun File.hasCrLf(checkCancelled: () -> Unit): Boolean = inputStream().buffered().use { input ->
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        var previous = -1
+        while (true) {
+            checkCancelled()
+            val count = input.read(buffer)
+            if (count < 0) break
+            for (index in 0 until count) {
+                val current = buffer[index].toInt()
+                if (previous == 13 && current == 10) return@use true
+                previous = current
+            }
+        }
+        false
     }
 
     private fun File.directorySizeBytes(): Long {
@@ -333,6 +371,7 @@ class LocalModelValidator @Inject constructor(
         const val MANIFEST_SCHEMA_VERSION = 1
         const val DEFAULT_RESERVED_OUTPUT_TOKENS = 256
         const val MAX_CONTEXT_WINDOW = 1_000_000
+        const val UNVERIFIED_SOURCE_WARNING = "模型来源未验证：仅校验文件完整性，未验证发布者或签名"
         private val MODEL_ID_REGEX = Regex("[A-Za-z0-9._-]+")
         private val SHA256_REGEX = Regex("[0-9a-f]{64}")
     }

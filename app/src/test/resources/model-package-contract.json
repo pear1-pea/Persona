@@ -1,0 +1,50 @@
+{
+  "description": "Shared package behavior contract; payloads are tiny and are not executable models.",
+  "payloads": {
+    "config.json": "{\"llm_model\":\"llm.mnn\",\"llm_weight\":\"llm.mnn.weight\"}",
+    "llm.mnn": "graph",
+    "llm.mnn.weight": "weights",
+    "tokenizer.txt": "430 3\n!\n"
+  },
+  "manifest": {
+    "schemaVersion": 1,
+    "id": "contract-model",
+    "name": "Contract model",
+    "version": "1.0",
+    "backend": "MNN",
+    "family": "QWEN2_5",
+    "promptFormat": "QWEN_CHATML_TEXT",
+    "entry": "llm.mnn",
+    "tokenizer": "tokenizer.txt",
+    "contextWindow": 2048,
+    "minRamGb": 0,
+    "minSdk": 24,
+    "requiredAbis": ["arm64-v8a"]
+  },
+  "cases": [
+    {"name": "valid LF package", "accept": true},
+    {"name": "untrusted signature does not authenticate publisher", "accept": true, "manifest": {"signature": "self-asserted"}},
+    {"name": "missing llm_model", "accept": false, "config": {"llm_weight": "llm.mnn.weight"}},
+    {"name": "null llm_model", "accept": false, "config": {"llm_model": null, "llm_weight": "llm.mnn.weight"}},
+    {"name": "non-string llm_model", "accept": false, "config": {"llm_model": 42, "llm_weight": "llm.mnn.weight"}},
+    {"name": "mismatched llm_model", "accept": false, "config": {"llm_model": "other.mnn", "llm_weight": "llm.mnn.weight"}},
+    {"name": "traversal llm_model", "accept": false, "config": {"llm_model": "../llm.mnn", "llm_weight": "llm.mnn.weight"}},
+    {"name": "missing weight config", "accept": false, "config": {"llm_model": "llm.mnn"}},
+    {"name": "absolute entry", "accept": false, "manifest": {"entry": "/llm.mnn"}},
+    {"name": "Windows absolute entry", "accept": false, "manifest": {"entry": "C:\\llm.mnn"}},
+    {"name": "traversal file", "accept": false, "fileOverrides": {"llm.mnn": {"path": "../llm.mnn"}}},
+    {"name": "wrong size", "accept": false, "fileOverrides": {"llm.mnn": {"size": 6}}},
+    {"name": "missing size", "accept": false, "fileOverrides": {"llm.mnn": {"size": null}}},
+    {"name": "negative size", "accept": false, "fileOverrides": {"llm.mnn": {"size": -1}}},
+    {"name": "wrong hash", "accept": false, "fileOverrides": {"llm.mnn": {"sha256": "0000000000000000000000000000000000000000000000000000000000000000"}}},
+    {"name": "invalid hash", "accept": false, "fileOverrides": {"llm.mnn": {"sha256": "xyz"}}},
+    {"name": "missing graph file", "accept": false, "removeFiles": ["llm.mnn"]},
+    {"name": "missing tokenizer file", "accept": false, "removeFiles": ["tokenizer.txt"]},
+    {"name": "missing config file", "accept": false, "removeFiles": ["config.json"]},
+    {"name": "missing READY", "accept": false, "removeFiles": ["READY"]},
+    {"name": "uncovered runtime weight", "accept": false, "omitEntries": ["llm.mnn.weight"]},
+    {"name": "uncovered tokenizer", "accept": false, "omitEntries": ["tokenizer.txt"]},
+    {"name": "empty files", "accept": false, "manifest": {"files": []}},
+    {"name": "CRLF with correct hash", "accept": false, "payloads": {"tokenizer.txt": "430 3\r\n!\r\n"}}
+  ]
+}

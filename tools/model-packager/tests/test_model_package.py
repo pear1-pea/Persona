@@ -71,6 +71,28 @@ class ModelPackageTest(unittest.TestCase):
 
         self.assertTrue(any("SHA256" in error for error in errors))
 
+    def test_build_rejects_crlf_text_tokenizer(self) -> None:
+        (self.root / "tokenizer.txt").write_bytes(b"430 3\r\n!\r\n")
+        with self.assertRaisesRegex(PackageError, "CRLF"):
+            build_manifest(self.root, model_id="qwen-test")
+
+    def test_validate_rejects_crlf_even_with_matching_hash(self) -> None:
+        manifest = build_manifest(self.root, model_id="qwen-test")
+        tokenizer = self.root / "tokenizer.txt"
+        tokenizer.write_bytes(b"x" * (1024 * 1024 - 1) + b"\r\n")
+        item = next(item for item in manifest["files"] if item["path"] == "tokenizer.txt")
+        item.update(size=tokenizer.stat().st_size, sha256=sha256_file(tokenizer))
+
+        errors, _ = validate_manifest(self.root, manifest)
+
+        self.assertTrue(any("CRLF" in error for error in errors))
+
+    def test_lf_text_tokenizer_is_accepted(self) -> None:
+        (self.root / "tokenizer.txt").write_bytes(b"430 3\n!\n")
+        manifest = build_manifest(self.root, model_id="qwen-test")
+        errors, _ = validate_manifest(self.root, manifest)
+        self.assertEqual([], errors)
+
     def test_build_rejects_entry_mismatch(self) -> None:
         (self.root / "config.json").write_text(
             json.dumps({"llm_model": "other.mnn", "llm_weight": "llm.mnn.weight"}),

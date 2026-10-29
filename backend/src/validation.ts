@@ -34,8 +34,9 @@ export const chatSchema = z.object({
   }).strict()).min(1).max(maxMessages),
   stream: z.literal(true),
   temperature: z.number().min(0).max(2).optional(),
-  top_p: z.number().min(0).max(1).optional(),
-  thinking: z.object({ type: z.string().max(40) }).optional()
+  top_p: z.number().gt(0).max(1).optional(),
+  thinking: z.object({ type: z.enum(["enabled", "disabled"]) }).strict().optional(),
+  max_tokens: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional()
 }).strict()
 
 export const personaIdSchema = z.string().uuid()

@@ -1,11 +1,13 @@
 #include <jni.h>
 #include <llm/llm.hpp>
+#include <generation_config.h>
 
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <functional>
 #include <mutex>
+#include <new>
 #include <ostream>
 #include <sstream>
 #include <streambuf>
@@ -225,6 +227,11 @@ private:
 
 struct MnnSession {
     MNN::Transformer::Llm* llm = nullptr;
+    std::string configPath;
+    std::optional<persona::GenerationConfig> appliedConfig;
+    int samplerRevision = 0;
+    int decodeSteps = 0;
+    int outputTokens = 0;
     std::atomic_bool stopRequested = false;
     std::mutex mutex;
 
@@ -234,6 +241,31 @@ struct MnnSession {
         }
     }
 };
+
+bool configureGeneration(JNIEnv* env, MnnSession* session, const persona::GenerationConfig& config) {
+    const char* errorClass = "java/lang/IllegalStateException";
+    const char* message = "MNN runtime load failed";
+    if (!config.valid()) {
+        errorClass = "java/lang/IllegalArgumentException";
+        message = "Invalid MNN generation parameters";
+    } else {
+        try {
+            if (persona::configureGeneration(session->llm, session->configPath,
+                    session->appliedConfig, session->samplerRevision, config)) return true;
+        } catch (const std::bad_alloc&) {
+            errorClass = "java/lang/OutOfMemoryError";
+            message = "MNN runtime allocation failed";
+        } catch (const std::exception&) {
+            // Only stage information crosses JNI; upstream errors may contain paths.
+        }
+    }
+    const auto exceptionClass = env->FindClass(errorClass);
+    if (exceptionClass != nullptr) {
+        env->ThrowNew(exceptionClass, message);
+        env->DeleteLocalRef(exceptionClass);
+    }
+    return false;
+}
 
 // A stop word can straddle two decoder chunks, so text whose tail is still a
 // possible stop-word prefix is withheld until it can be resolved either way.
@@ -420,10 +452,14 @@ void runGeneration(
     const std::function<void(std::ostream*, const char*)>& prefill,
     const std::function<void(const std::string&)>& syncPromptCache
 ) {
-    if (session == nullptr || session->llm == nullptr || callback == nullptr) return;
+    if (session == nullptr || callback == nullptr) return;
 
     std::lock_guard<std::mutex> lock(session->mutex);
     session->stopRequested = false;
+    session->decodeSteps = 0;
+    session->outputTokens = 0;
+    if (!configureGeneration(env, session, {temperature, topP, maxTokens})) return;
+    if (session->stopRequested) return;
     restoreAndroidSteppingStatusIfNeeded(session->llm);
 
     const auto callbackClass = env->GetObjectClass(callback);
@@ -431,11 +467,7 @@ void runGeneration(
     env->DeleteLocalRef(callbackClass);
     if (onToken == nullptr) return;
 
-    const auto config = "{\"temperature\":" + std::to_string(temperature) +
-        ",\"top_p\":" + std::to_string(topP) + "}";
-    session->llm->set_config(config);
-
-    const auto maxNewTokens = maxTokens > 0 ? maxTokens : 512;
+    const auto maxNewTokens = maxTokens;
     const auto primaryStopWord = stopWords.empty() ? std::string(DEFAULT_STOP_WORD) : stopWords.front();
     int currentSize = 0;
     bool generationTextEnd = false;
@@ -524,6 +556,10 @@ void runGeneration(
         currentSize++;
         resolveAndroidSteppingEop();
     }
+    session->decodeSteps = currentSize;
+    if (const auto* context = session->llm->getContext()) {
+        session->outputTokens = static_cast<int>(context->output_tokens.size());
+    }
     finalizePendingEop();
 
     if (!session->stopRequested) {
@@ -553,13 +589,48 @@ Java_com_example_persona_core_ai_mnn_NativeMnnSession_nativeCreate(
     const auto path = toString(env, configPath);
     if (path.empty()) return 0;
 
-    auto* session = new MnnSession();
-    session->llm = MNN::Transformer::Llm::createLLM(path);
-    if (session->llm == nullptr || !session->llm->load()) {
-        delete session;
-        return 0;
+    auto session = std::make_unique<MnnSession>();
+    session->configPath = path;
+    if (!configureGeneration(env, session.get(), {})) return 0;
+    return reinterpret_cast<jlong>(session.release());
+}
+
+extern "C" JNIEXPORT jintArray JNICALL
+Java_com_example_persona_core_ai_mnn_NativeMnnSession_nativeSampleForVerification(
+    JNIEnv* env, jobject, jlong handle, jint draws
+) {
+    auto* session = reinterpret_cast<MnnSession*>(handle);
+    if (session == nullptr || draws < 1 || draws > 65536) return nullptr;
+    std::lock_guard<std::mutex> lock(session->mutex);
+    if (session->llm == nullptr) return nullptr;
+    // Exercise the active sampler through Llm's public API, with synthetic logits
+    // unrelated to user data. Never return/log prompt, response, or token IDs.
+    const float values[] = {3.0f, 2.0f, 1.0f, 0.0f};
+    const auto logits = MNN::Express::_Const(values, {4}, MNN::Express::NHWC, halide_type_of<float>());
+    jint counts[] = {0, 0, 0, 0};
+    for (int index = 0; index < draws; ++index) {
+        const auto selected = session->llm->sample(logits);
+        if (selected < 0 || selected >= 4) return nullptr;
+        ++counts[selected];
     }
-    return reinterpret_cast<jlong>(session);
+    const auto result = env->NewIntArray(4);
+    if (result != nullptr) env->SetIntArrayRegion(result, 0, 4, counts);
+    return result;
+}
+
+extern "C" JNIEXPORT jintArray JNICALL
+Java_com_example_persona_core_ai_mnn_NativeMnnSession_nativeGenerationDiagnostics(
+    JNIEnv* env, jobject, jlong handle
+) {
+    auto* session = reinterpret_cast<MnnSession*>(handle);
+    if (session == nullptr) return nullptr;
+    std::lock_guard<std::mutex> lock(session->mutex);
+    if (session->llm == nullptr || !session->appliedConfig) return nullptr;
+    const jint values[] = {session->samplerRevision, session->appliedConfig->maxTokens,
+        session->decodeSteps, session->outputTokens};
+    const auto result = env->NewIntArray(4);
+    if (result != nullptr) env->SetIntArrayRegion(result, 0, 4, values);
+    return result;
 }
 
 extern "C" JNIEXPORT jint JNICALL
@@ -570,12 +641,30 @@ Java_com_example_persona_core_ai_mnn_NativeMnnSession_nativeCountTokens(
     jstring text
 ) {
     auto* session = reinterpret_cast<MnnSession*>(handle);
-    if (session == nullptr || session->llm == nullptr) return -1;
+    if (session == nullptr) return -1;
 
     const auto value = toString(env, text);
     std::lock_guard<std::mutex> lock(session->mutex);
+    if (session->llm == nullptr) return -1;
     const auto inputIds = session->llm->tokenizer_encode(value);
     return static_cast<jint>(inputIds.size());
+}
+
+extern "C" JNIEXPORT jlongArray JNICALL
+Java_com_example_persona_core_ai_mnn_NativeMnnSession_nativeTimings(
+    JNIEnv* env, jobject, jlong handle
+) {
+    auto* session = reinterpret_cast<MnnSession*>(handle);
+    if (session == nullptr) return nullptr;
+    std::lock_guard<std::mutex> lock(session->mutex);
+    if (session->llm == nullptr) return nullptr;
+    const auto* context = session->llm->getContext();
+    if (context == nullptr) return nullptr;
+    const jlong values[] = {context->prompt_len, static_cast<jlong>(context->output_tokens.size()),
+        context->prefill_us, context->decode_us, context->sample_us};
+    const auto result = env->NewLongArray(5);
+    if (result != nullptr) env->SetLongArrayRegion(result, 0, 5, values);
+    return result;
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -585,9 +674,10 @@ Java_com_example_persona_core_ai_mnn_NativeMnnSession_nativeReset(
     jlong handle
 ) {
     auto* session = reinterpret_cast<MnnSession*>(handle);
-    if (session == nullptr || session->llm == nullptr) return;
+    if (session == nullptr) return;
 
     std::lock_guard<std::mutex> lock(session->mutex);
+    if (session->llm == nullptr) return;
     session->llm->reset();
 }
 
@@ -650,6 +740,9 @@ Java_com_example_persona_core_ai_mnn_NativeMnnSession_nativeGenerateChatMessages
         maxTokens,
         nativeStopWords,
         [&](std::ostream* output, const char* primaryStopWord) {
+            // Native sessions are shared across accounts; each request supplies
+            // its complete authorized context instead of inheriting private KV.
+            session->llm->reset();
             session->llm->response(messages, output, primaryStopWord, 0);
         },
         [&](const std::string& responseText) {

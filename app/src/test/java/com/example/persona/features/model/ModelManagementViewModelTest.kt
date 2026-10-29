@@ -82,14 +82,13 @@ class ModelManagementViewModelTest {
         whenever(manager.modelsRoot()).thenReturn(File("models"))
         whenever(manager.currentModel).thenReturn(MutableStateFlow<InstalledModel?>(model))
         runBlocking {
-            whenever(manager.refreshModelReports()).thenReturn(listOf(readyReport))
-            whenever(manager.selectModel(any())).thenReturn(model)
-            whenever(manager.deleteModel(any())).thenReturn(true)
+            whenever(hybridRepository.refreshLocalModels()).thenReturn(listOf(readyReport))
+            whenever(hybridRepository.selectLocalModel(any())).thenReturn(model)
+            whenever(hybridRepository.deleteLocalModel(any())).thenReturn(true)
             whenever(manager.installModelFromTree(any())).thenReturn(
                 ModelPackageInstallResult.Success(model)
             )
-            whenever(manager.clearCurrentModel()).thenReturn(Unit)
-            whenever(hybridRepository.prepareModelForDeletion(any())).thenReturn(true)
+            whenever(hybridRepository.clearLocalModel()).thenReturn(Unit)
         }
     }
 
@@ -114,7 +113,7 @@ class ModelManagementViewModelTest {
     }
 
     @Test
-    fun `select model delegates to the manager and refreshes`() = runTest {
+    fun `select model uses the lifecycle owner and refreshes`() = runTest {
         whenever(manager.currentModel).thenReturn(MutableStateFlow<InstalledModel?>(null))
         val viewModel = newViewModel()
         viewModel.refreshModels()
@@ -124,7 +123,7 @@ class ModelManagementViewModelTest {
         viewModel.selectModel(item)
         advanceUntilIdle()
 
-        verify(manager).selectModel(model.modelDir)
+        verify(hybridRepository).selectLocalModel(model.modelDir)
         assertTrue(viewModel.state.value.message.contains("已切换当前模型"))
     }
 
@@ -137,8 +136,21 @@ class ModelManagementViewModelTest {
 
         viewModel.selectModel(blocked)
 
-        verify(manager, never()).selectModel(any())
+        verify(hybridRepository, never()).selectLocalModel(any())
         assertTrue(viewModel.state.value.message.contains("不可用"))
+    }
+
+    @Test
+    fun `selecting the current model requests an explicit retry`() = runTest {
+        val viewModel = newViewModel()
+        viewModel.refreshModels()
+        advanceUntilIdle()
+
+        viewModel.selectModel(viewModel.state.value.items.first())
+        advanceUntilIdle()
+
+        verify(hybridRepository).selectLocalModel(model.modelDir)
+        assertTrue(viewModel.state.value.message.contains("已重新选择模型"))
     }
 
     @Test
@@ -150,12 +162,24 @@ class ModelManagementViewModelTest {
         viewModel.useCloud()
         advanceUntilIdle()
 
-        verify(manager).clearCurrentModel()
+        verify(hybridRepository).clearLocalModel()
         assertTrue(viewModel.state.value.message.contains("云端"))
     }
 
     @Test
-    fun `delete model delegates to the manager`() = runTest {
+    fun `release errors are shown without claiming cloud selection succeeded`() = runTest {
+        whenever(hybridRepository.clearLocalModel()).thenAnswer { throw IllegalStateException("close failed") }
+        val viewModel = newViewModel()
+
+        viewModel.useCloud()
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value.message.contains("切换失败"))
+        assertTrue(!viewModel.state.value.isLoading)
+    }
+
+    @Test
+    fun `delete model uses a single lifecycle operation`() = runTest {
         val viewModel = newViewModel()
         viewModel.refreshModels()
         advanceUntilIdle()
@@ -164,15 +188,14 @@ class ModelManagementViewModelTest {
         viewModel.deleteModel(item)
         advanceUntilIdle()
 
-        verify(hybridRepository).prepareModelForDeletion(item.modelDir)
-        verify(hybridRepository).finishModelDeletion()
-        verify(manager).deleteModel(item.modelDir)
+        verify(hybridRepository).deleteLocalModel(item.modelDir)
+        verify(manager, never()).deleteModel(any())
         assertTrue(viewModel.state.value.message.contains("已删除模型目录"))
     }
 
     @Test
-    fun `delete aborts when the runtime cannot be released`() = runTest {
-        whenever(hybridRepository.prepareModelForDeletion(any())).thenReturn(false)
+    fun `delete failure is reported without bypassing the lifecycle owner`() = runTest {
+        whenever(hybridRepository.deleteLocalModel(any())).thenReturn(false)
         val viewModel = newViewModel()
         viewModel.refreshModels()
         advanceUntilIdle()
@@ -182,8 +205,7 @@ class ModelManagementViewModelTest {
         advanceUntilIdle()
 
         verify(manager, never()).deleteModel(any())
-        verify(hybridRepository, never()).finishModelDeletion()
-        assertTrue(viewModel.state.value.message.contains("无法停止"))
+        assertTrue(viewModel.state.value.message.contains("删除失败"))
     }
 
     @Test
@@ -222,7 +244,7 @@ class ModelManagementViewModelTest {
         advanceUntilIdle()
         val previous = viewModel.state.value.items
 
-        whenever(manager.refreshModelReports()).thenThrow(IllegalStateException("scan failed"))
+        whenever(hybridRepository.refreshLocalModels()).thenAnswer { throw IllegalStateException("scan failed") }
         viewModel.refreshModels()
         advanceUntilIdle()
 

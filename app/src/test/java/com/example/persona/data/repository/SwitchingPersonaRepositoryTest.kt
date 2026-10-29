@@ -1,5 +1,10 @@
 package com.example.persona.data.repository
 
+import com.example.persona.core.auth.SessionTokenStore
+import com.example.persona.core.auth.StoredSession
+import com.example.persona.data.remote.AuthApi
+import com.example.persona.data.remote.dto.AuthSessionDto
+import com.example.persona.data.remote.dto.AuthUserDto
 import com.example.persona.core.auth.AuthManager
 import com.example.persona.domain.model.Persona
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -11,13 +16,24 @@ import org.junit.Test
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
+import org.mockito.kotlin.doSuspendableAnswer
+import org.mockito.kotlin.never
+import org.mockito.kotlin.any
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.async
+import kotlinx.coroutines.withContext
+import org.junit.Assert.assertTrue
 import java.io.IOException
 
 class SwitchingPersonaRepositoryTest {
 
     private val roomImpl: RoomPersonaRepository = mock()
     private val remoteImpl: RemotePersonaRepository = mock()
-    private val authManager: AuthManager = mock()
+    private val tokenStore: SessionTokenStore = mock()
+    private val authApi: AuthApi = mock()
+    private lateinit var authManager: AuthManager
     private lateinit var repo: SwitchingPersonaRepository
 
     private val roomPersona = Persona("r1", "Room", "", "", listOf("B"), "from room", "me")
@@ -25,7 +41,7 @@ class SwitchingPersonaRepositoryTest {
 
     @Before
     fun setUp() {
-        whenever(authManager.isLoggedIn).thenReturn(MutableStateFlow(false))
+        authManager = AuthManager(authApi, tokenStore, mock())
         repo = SwitchingPersonaRepository(roomImpl, remoteImpl, authManager)
     }
 
@@ -163,8 +179,7 @@ class SwitchingPersonaRepositoryTest {
 
     @Test
     fun `logged in without a user id remains on the room source`() = runTest {
-        whenever(authManager.isLoggedIn).thenReturn(MutableStateFlow(true))
-        whenever(authManager.currentUserId).thenReturn(null)
+        // With no stored session the local source remains independent.
         whenever(roomImpl.getMyPersonas()).thenReturn(listOf(roomPersona))
 
         val result = repo.getMyPersonas()
@@ -173,8 +188,40 @@ class SwitchingPersonaRepositoryTest {
         verify(roomImpl).getMyPersonas()
     }
 
-    private fun login() {
-        whenever(authManager.isLoggedIn).thenReturn(MutableStateFlow(true))
-        whenever(authManager.currentUserId).thenReturn("user-1")
+    @Test
+    fun `old remote failure after logout cannot fall back into offline source`() = runTest {
+        login()
+        val started = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        whenever(remoteImpl.getPersonas()).doSuspendableAnswer {
+            withContext(NonCancellable) {
+                started.complete(Unit)
+                release.await()
+            }
+            throw IOException("old request failed")
+        }
+        val result = async { runCatching { repo.getPersonas() } }
+        started.await()
+        authManager.logout()
+        release.complete(Unit)
+        assertTrue(result.await().exceptionOrNull() is CancellationException)
+        verify(roomImpl, never()).getPublicSeedPersonas()
+    }
+
+    @Test
+    fun `logged in lookup cannot merge offline persona with same id`() = runTest {
+        login()
+        whenever(remoteImpl.getPersonaById("same-id")).thenReturn(null)
+        whenever(roomImpl.getPublicSeedPersonaById("same-id")).thenReturn(null)
+        whenever(roomImpl.getPersonaById("same-id")).thenReturn(roomPersona.copy(id = "same-id"))
+        assertNull(repo.getPersonaById("same-id"))
+        verify(roomImpl, never()).getPersonaById(any())
+    }
+
+    private suspend fun login() {
+        whenever(authApi.login(org.mockito.kotlin.any())).thenReturn(
+            AuthSessionDto("token", "2099-01-01", AuthUserDto("user-1", "user-1@test.dev"))
+        )
+        authManager.signIn("user-1@test.dev", "password")
     }
 }

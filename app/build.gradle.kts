@@ -37,6 +37,7 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
+        manifestPlaceholders["personaTestDocumentsEnabled"] = "false"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -57,6 +58,12 @@ android {
     }
 
     buildTypes {
+        debug {
+            if (providers.gradleProperty("persona.isolatedValidation").orNull == "true") {
+                applicationIdSuffix = ".validation"
+                manifestPlaceholders["personaTestDocumentsEnabled"] = "true"
+            }
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(

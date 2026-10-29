@@ -2,10 +2,16 @@ package com.example.persona.data.repository
 
 import com.example.persona.data.local.dao.MessageDao
 import com.example.persona.data.local.entity.MessageEntity
+import com.example.persona.core.auth.SessionTokenStore
+import com.example.persona.core.auth.StoredSession
+import com.example.persona.data.remote.AuthApi
+import com.example.persona.data.remote.dto.AuthSessionDto
+import com.example.persona.data.remote.dto.AuthUserDto
 import com.example.persona.core.auth.AuthManager
 import com.example.persona.domain.model.Message
 import com.example.persona.domain.model.MessageStatus
 import com.example.persona.domain.model.Persona
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Before
@@ -14,18 +20,27 @@ import org.mockito.kotlin.any
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
+import org.mockito.kotlin.never
+import org.mockito.kotlin.argumentCaptor
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
+import org.junit.Assert.assertTrue
 
 class RoomChatRepositoryTest {
 
     private val messageDao: MessageDao = mock()
-    private val authManager: AuthManager = mock()
+    private val tokenStore: SessionTokenStore = mock()
+    private val authApi: AuthApi = mock()
+    private lateinit var authManager: AuthManager
     private lateinit var repo: RoomChatRepository
 
     private val samplePersona = Persona("p1", "Test", "", "", listOf("A"), "Backstory", "me")
 
     @Before
     fun setUp() {
-        whenever(authManager.currentRepoId).thenReturn("me")
+        whenever(tokenStore.read()).thenReturn(StoredSession("token", "me", "me@test.dev"))
+        authManager = AuthManager(authApi, tokenStore, mock())
         repo = RoomChatRepository(messageDao, authManager)
     }
 
@@ -62,10 +77,12 @@ class RoomChatRepositoryTest {
     }
 
     @Test
-    fun `getMessagesStream returns paging flow`() {
+    fun `pager created by old session cannot load under next identity`() = runTest {
         val flow = repo.getMessagesStream("p1")
-
-        assert(flow is kotlinx.coroutines.flow.Flow)
+        authManager.logout()
+        val error = runCatching { flow.first() }.exceptionOrNull()
+        assertTrue(error is CancellationException)
+        verify(messageDao, never()).getMessagesByPersonaId(any(), any())
     }
 
     @Test
@@ -78,5 +95,28 @@ class RoomChatRepositoryTest {
 
         assertEquals(listOf("Old", "New"), messages.map { it.content })
         verify(messageDao).getRecentMessagesByPersonaId("p1", "me", 2)
+    }
+
+    @Test
+    fun `stale generation cannot write under next account even in finalizer`() = runTest {
+        val original = authManager.identity.value
+        whenever(authApi.login(any())).thenReturn(
+            AuthSessionDto("next-token", "2099-01-01", AuthUserDto("next", "next@test.dev"))
+        )
+        authManager.signIn("next@test.dev", "password")
+        val error = withContext(NonCancellable + original) {
+            runCatching { repo.saveMessage(Message("late", "p1", "partial", false), samplePersona) }
+                .exceptionOrNull()
+        }
+        assertTrue(error is CancellationException)
+        verify(messageDao, never()).insertPersonaAndMessage(any(), any(), any())
+    }
+
+    @Test
+    fun `owner is captured before suspending database write`() = runTest {
+        val captured = argumentCaptor<MessageEntity>()
+        repo.saveMessage(Message("mine", "p1", "hello", true), samplePersona)
+        verify(messageDao).insertPersonaAndMessage(any(), any(), captured.capture())
+        assertEquals("me", captured.firstValue.ownerId)
     }
 }

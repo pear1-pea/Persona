@@ -8,6 +8,7 @@ data class ChatRequest(
     @SerializedName("stream") val stream: Boolean = true,
     @SerializedName("temperature") val temperature: Float = 0.7f,
     @SerializedName("top_p") val topP: Float = 0.8f,
+    @SerializedName("max_tokens") val maxTokens: Int = 256,
     @SerializedName("thinking") val thinking: ThinkingDto = ThinkingDto()
 )
 

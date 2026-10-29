@@ -97,33 +97,42 @@ class ModelManagementViewModel @Inject constructor(
         }
 
         viewModelScope.launch {
-            if (item.isCurrent) {
-                _state.value = _state.value.copy(message = "该模型已是当前使用")
-            } else {
-                _state.value = _state.value.copy(isLoading = true, message = "正在切换模型...")
-                val selected = localModelManager.selectModel(item.modelDir)
-                loadModels(
-                    if (selected != null) {
-                        buildString {
-                            append("已切换当前模型：")
-                            append(selected.name)
-                            item.riskText?.let { risk ->
-                                append("。")
-                                append(risk)
-                            }
-                        }
-                    } else {
-                        "切换失败：模型不可用或目录不受管理"
-                    }
-                )
+            _state.value = _state.value.copy(isLoading = true, message = "正在选择模型...")
+            val selected = runCatching {
+                hybridAiRepository.selectLocalModel(item.modelDir)
+            }.getOrElse { error ->
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                loadModels("选择失败：无法释放或选择本地模型")
+                return@launch
             }
+            loadModels(
+                if (selected != null) {
+                    buildString {
+                        append(if (item.isCurrent) "已重新选择模型：" else "已切换当前模型：")
+                        append(selected.name)
+                        item.riskText?.let { risk ->
+                            append("。")
+                            append(risk)
+                        }
+                    }
+                } else {
+                    "切换失败：模型不可用或目录不受管理"
+                }
+            )
         }
     }
 
     fun useCloud() {
         viewModelScope.launch {
             _state.value = _state.value.copy(isLoading = true, message = "正在切换到云端...")
-            localModelManager.clearCurrentModel()
+            try {
+                hybridAiRepository.clearLocalModel()
+            } catch (error: kotlinx.coroutines.CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                loadModels("切换失败：无法释放本地模型")
+                return@launch
+            }
             loadModels("已改用云端，聊天将默认走云端")
         }
     }
@@ -131,21 +140,12 @@ class ModelManagementViewModel @Inject constructor(
     fun deleteModel(item: ModelUiItem) {
         viewModelScope.launch {
             _state.value = _state.value.copy(isLoading = true, message = "正在删除模型...")
-            val prepared = hybridAiRepository.prepareModelForDeletion(item.modelDir)
-            if (!prepared) {
-                loadModels("删除失败：无法停止或释放本地模型")
-                return@launch
-            }
-            val deleted = try {
-                localModelManager.deleteModel(item.modelDir)
-            } finally {
-                hybridAiRepository.finishModelDeletion()
-            }
+            val deleted = hybridAiRepository.deleteLocalModel(item.modelDir)
             loadModels(
                 if (deleted) {
                     "已删除模型目录：" + item.directoryName
                 } else {
-                    "删除失败：模型仍在使用、目录不存在或不在 App models 目录下"
+                    "删除失败：无法释放模型或删除受管理目录"
                 }
             )
         }
@@ -168,7 +168,7 @@ class ModelManagementViewModel @Inject constructor(
     ) {
         val capability = localModelManager.deviceCapability()
         runCatching {
-            localModelManager.refreshModelReports()
+            hybridAiRepository.refreshLocalModels()
         }.onSuccess { reports ->
             val currentModel = localModelManager.currentModel.value
             val items = reports
@@ -198,6 +198,7 @@ class ModelManagementViewModel @Inject constructor(
                 feedbackMessage = feedbackMessage
             )
         }.onFailure { error ->
+            if (error is kotlinx.coroutines.CancellationException) throw error
             val feedbackMessage = if (showScanFeedback) "模型扫描失败：" + (error.message ?: "未知错误") else null
             _state.value = ModelManagementUiState(
                 isLoading = false,

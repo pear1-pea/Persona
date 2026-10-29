@@ -100,9 +100,32 @@ node scripts/admin-user.mjs reset-password user@example.com 'new-password'
 
 ## DeepSeek proxy
 
-`POST /api/chat/completions` 只接受 allowlist 中的 model、最多 `MAX_MESSAGES` 条消息和受限消息长度，并按用户 ID 做分钟级限流。Backend 还限制每用户和全局并发、每日输入/输出预算，并固定上游 `max_tokens`。未配置 `DEEPSEEK_API_KEY` 时，认证和 Persona API 仍可启动，chat endpoint 返回 `503`。上游请求断开时会取消 DeepSeek fetch。服务端日志不要记录 Authorization、完整 prompt 或完整响应。
+`POST /api/chat/completions` 只接受与 `DEEPSEEK_MODEL_ID` 相同的 model、最多 `MAX_MESSAGES` 条消息和受限消息长度，并按用户 ID 做分钟级限流。Backend 还限制每用户和单进程全局并发、每日输入/输出预算。未配置 `DEEPSEEK_API_KEY` 时，认证和 Persona API 仍可启动，chat endpoint 返回 `503`。服务端日志不要记录 Authorization、完整 prompt 或完整响应。
+
+保留既有 `model/messages/stream/temperature/top_p/thinking` 字段；合法生成参数会透传，省略时仍使用 `temperature=0.7`、`top_p=0.8`、`thinking.type=disabled`。`temperature` 范围为 `[0, 2]`，`top_p` 为 `(0, 1]`，`thinking.type` 只能是 `enabled/disabled`。可选 `max_tokens` 必须是正整数且不超出 JavaScript 安全整数范围，发送上游时取它与 `MAX_OUTPUT_TOKENS` 的较小值。未传时使用服务端上限。Android 无需同步修改；不支持的字段仍返回 `400`。服务端固定请求最终 usage，客户端不能覆盖此选项。
+
+预算采用两个 bucket 的同一 PostgreSQL 事务预留：输入按消息字符数、输出按本次 `max_tokens` 上限。并发拒绝、校验失败或任一预算不足都不扣预算（分钟请求限流仍计次）。结算语义如下：
+
+- 发出上游请求前失败，或上游明确返回非 2xx：释放两项预留。401/403 对客户端映射为 502；429 保留状态和 `Retry-After`，只返回安全错误码，不透出上游错误原文。
+- 请求已发出且没有明确拒绝：输入字符计入用量；拿到终止 chunk 的有效 `usage.completion_tokens` 后按实际输出结算，包括上游报告的 reasoning token 成本。重复 usage 不会重复退款，实际用量超出预留也会记账。
+- 取消、超时、网络断流、格式错误或缺少最终 usage 时，已经收到的最终 usage 仍有效；没有它则保留输出上限预留。这是保守额度统计，不代表已知供应商的准确账单，不能根据已转发文本推算退款。
+- 结算原子执行一次，旧窗口的结算不会退款到新的 24 小时窗口。数据库结算失败会记录 `chat_budget_settlement_failed` 并保留原预留；进程崩溃也可能留下预留，当前没有持久化请求账本或自动对账恢复。
+
+`CHAT_UPSTREAM_TIMEOUT_MS` 从预留前开始计时，限制 fetch 和背压等待的总时长，持续输出不会重置；数据库操作不能被该 AbortSignal 即时打断，预留返回后会先检查取消再决定是否发出上游请求。客户端 close/error/abort 或 deadline 都会取消 fetch 和 drain 等待，并在退出时释放并发槽。上游必须返回 `text/event-stream` 和 `data: [DONE]`；SSE 字节保持原样转发，单帧最多 1,000,000 字符。尚未输出时的格式错误返回 502，开始输出后的断流/格式错误直接中断连接，不伪造成功结束。
 
 限流记录保存在 PostgreSQL，可用于多实例部署。若 Nginx/API Gateway 已清洗并重写 `X-Forwarded-For`，设置 `TRUST_PROXY=true`；否则保持 `false`，避免客户端伪造 IP。
+
+每日预算可跨实例共享；并发槽仍是进程内计数，多实例总并发需要网关或共享协调另行限制。
+
+本地验证：
+
+```bash
+npm run typecheck
+npm test
+TEST_DATABASE_URL=postgres://test_user@127.0.0.1:5432/persona_test npm run test:integration
+```
+
+集成测试只使用固定假 key 和本机可控 HTTP 上游，不需要配置真实 DeepSeek key。`TEST_DATABASE_URL` 必须指向允许创建 schema/安装 `citext` 的测试库；每次创建独立随机 schema 并在结束时删除，后台进程的 `DATABASE_URL` 和云端配置全部替换为测试值。未提供此变量时集成测试显示 skipped。覆盖慢首包、增量/持续输出、断流、取消、429、SSE 格式与分片、暂停 TCP 读取造成的背压、并发槽回收、预算竞争/回滚/结算幂等/窗口切换，并运行既有双用户 auth/persona smoke。
 
 部署后运行双用户权限验收：
 

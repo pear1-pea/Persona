@@ -18,7 +18,8 @@ internal object ContextPlanner {
         val maxInputTokens = (
             model.contextWindow - effectiveReservedOutputTokens(params) -
                 templateSpecialTokens - safetyMargin
-            ).coerceAtLeast(MIN_INPUT_TOKENS)
+            )
+        if (maxInputTokens < MIN_INPUT_TOKENS) throw ContextBudgetExceeded("模型上下文不足以保留输出预算")
         val systemMessage = history.firstOrNull { normalizeRole(it.role) == ROLE_SYSTEM }
             ?.takeIf { it.content.isNotBlank() }
         val conversation = history
@@ -68,11 +69,6 @@ internal object ContextPlanner {
             if (usedTokens + groupTokens <= maxInputTokens) {
                 selectedGroups.add(0, group)
                 usedTokens += groupTokens
-            } else if (selectedGroups.isEmpty()) {
-                val remaining = (maxInputTokens - usedTokens).coerceAtLeast(0)
-                val truncatedGroup = truncateGroup(group, remaining, tokenizer)
-                if (truncatedGroup.isNotEmpty()) selectedGroups.add(truncatedGroup)
-                break
             } else {
                 break
             }
@@ -112,82 +108,10 @@ internal object ContextPlanner {
             }
 
             val currentIndexAfterHistory = messages.lastIndex
-            if (currentIndexAfterHistory >= 0) {
-                val truncatedCurrent = truncateMessage(
-                    messages = messages,
-                    index = currentIndexAfterHistory,
-                    maxInputTokens = maxInputTokens,
-                    tokenizer = tokenizer,
-                    count = ::count
-                )
-                messages[currentIndexAfterHistory] = truncatedCurrent
-            }
-            if (count(messages) <= maxInputTokens) break
-
-            val systemIndex = messages.indexOfFirst { normalizeRole(it.role) == ROLE_SYSTEM }
-            if (systemIndex >= 0) {
-                messages[systemIndex] = truncateMessage(
-                    messages = messages,
-                    index = systemIndex,
-                    maxInputTokens = maxInputTokens,
-                    tokenizer = tokenizer,
-                    count = ::count
-                )
-            } else {
-                break
-            }
+            if (currentIndexAfterHistory >= 0) throw ContextBudgetExceeded("系统设定或当前消息超出本地上下文预算，请缩短后重试")
         }
+        if (count(messages) > maxInputTokens) throw ContextBudgetExceeded("无法在模型预算内保留当前输入与系统规则")
         return messages
-    }
-
-    private fun truncateGroup(
-        group: List<ChatMessage>,
-        maxInputTokens: Int,
-        tokenizer: Tokenizer
-    ): List<ChatMessage> {
-        if (maxInputTokens < group.size * MESSAGE_TOKEN_OVERHEAD) return emptyList()
-        val result = group.toMutableList()
-        var remainingContentTokens = maxInputTokens - group.size * MESSAGE_TOKEN_OVERHEAD
-        result.forEachIndexed { index, message ->
-            val contentTokens = tokenizer.countTokens(message.content.trim())
-            val remainingMessages = result.size - index
-            val allowance = minOf(
-                contentTokens,
-                (remainingContentTokens / remainingMessages).coerceAtLeast(0)
-            )
-            val truncatedContent = tokenizer.truncateToTokens(message.content.trim(), allowance)
-            result[index] = message.copy(content = truncatedContent)
-            remainingContentTokens = (
-                remainingContentTokens - tokenizer.countTokens(truncatedContent)
-                ).coerceAtLeast(0)
-        }
-        return result.filter { it.content.isNotBlank() }
-    }
-
-    private fun truncateMessage(
-        messages: List<ChatMessage>,
-        index: Int,
-        maxInputTokens: Int,
-        tokenizer: Tokenizer,
-        count: (List<ChatMessage>) -> Int
-    ): ChatMessage {
-        val original = messages[index]
-        var low = 0
-        var high = original.content.codePointCount(0, original.content.length)
-        var best = ""
-        while (low <= high) {
-            val middle = (low + high) ushr 1
-            val end = original.content.offsetByCodePoints(0, middle)
-            val candidate = original.copy(content = original.content.substring(0, end))
-            val candidateMessages = messages.toMutableList().also { it[index] = candidate }
-            if (count(candidateMessages) <= maxInputTokens) {
-                best = candidate.content
-                low = middle + 1
-            } else {
-                high = middle - 1
-            }
-        }
-        return original.copy(content = best)
     }
 
     private fun List<ChatMessage>.toRecentGroups(): List<List<ChatMessage>> {

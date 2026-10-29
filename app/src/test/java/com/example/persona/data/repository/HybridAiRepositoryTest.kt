@@ -7,6 +7,7 @@ import com.example.persona.core.ai.EngineState
 import com.example.persona.core.ai.GenerationError
 import com.example.persona.core.ai.GenerationErrorType
 import com.example.persona.core.ai.GenerationEvent
+import com.example.persona.core.ai.GenerationParams
 import com.example.persona.core.ai.GenerationMetrics
 import com.example.persona.core.ai.GenerationSession
 import com.example.persona.core.ai.HybridRouter
@@ -22,7 +23,17 @@ import com.example.persona.core.ai.NetworkState
 import com.example.persona.core.ai.PromptFormats
 import com.example.persona.core.ai.RoutingContextProvider
 import com.example.persona.core.ai.ThermalStatus
+import com.example.persona.core.ai.PrivacyLevel
+import com.example.persona.core.ai.TaskComplexity
+import com.example.persona.core.ai.Route
+import com.example.persona.core.ai.RoutingDecision
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -32,10 +43,15 @@ import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withContext
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.After
 import org.junit.Test
 import org.mockito.kotlin.any
 import org.mockito.kotlin.atLeastOnce
@@ -59,12 +75,18 @@ class HybridAiRepositoryTest {
         ModelAdmissionReport(ModelAdmission.SUPPORTED)
     )
     private lateinit var repository: HybridAiRepository
+    private val observerScope = TestScope()
 
     @Before
     fun setUp() {
         whenever(localEngine.state).thenReturn(engineState)
         runBlocking {
+            whenever(localEngine.initialize(any())).thenReturn(true)
             whenever(localEngine.smokeTest(any())).thenReturn(true)
+            whenever(localModelManager.clearCurrentModel()).thenAnswer {
+                modelState.value = null
+                Unit
+            }
         }
         whenever(localModelManager.currentModel).thenReturn(modelState)
         whenever(localModelManager.currentAdmission).thenReturn(admissionState)
@@ -72,18 +94,103 @@ class HybridAiRepositoryTest {
         whenever(localModelManager.recentFailureCount(any())).thenReturn(0)
         whenever(localModelManager.recentFailure(any())).thenReturn(null)
         whenever(routingContextProvider.networkState()).thenReturn(NetworkState.UNMETERED)
-        repository = HybridAiRepository(
+        repository = newRepository(StandardTestDispatcher(observerScope.testScheduler))
+    }
+
+    private fun newRepository(dispatcher: CoroutineDispatcher) = HybridAiRepository(
             cloudRepository,
             localEngine,
             localModelManager,
             router,
-            routingContextProvider
+            routingContextProvider,
+            observerScope.backgroundScope,
+            dispatcher
         )
+
+    @After
+    fun tearDown() {
+        observerScope.cancel()
+    }
+
+    private fun runTest(block: suspend TestScope.() -> Unit) = observerScope.runTest(testBody = block)
+
+    @Test
+    fun `a ready model is not charged its weights twice when memory falls after loading`() = runTest {
+        modelState.value = sampleModel().copy(totalSizeBytes = 700_000_000L)
+        whenever(localModelManager.deviceCapability()).thenReturn(deviceProfile().copy(availableMemBytes = 1_100_000_000L))
+        assertTrue(repository.initializeLocalModel())
+        whenever(localModelManager.deviceCapability()).thenReturn(deviceProfile().copy(availableMemBytes = 500_000_000L))
+        whenever(localEngine.streamResponse(any(), any(), any(), any())).thenReturn(flowOf(delta("local"), completed()))
+        val decision = repository.selectRouteForGeneration(false, false, PrivacyLevel.NORMAL, TaskComplexity.SIMPLE)
+        assertTrue(decision.isLocalPreferred)
+        val session = GenerationSession().apply { bindRoutingDecision(decision) }
+        val events = repository.streamResponse(HybridAiRepository.Mode.LOCAL, session, "rules", "hello",
+            route = decision.route).toList()
+        assertEquals(listOf("local"), events.deltaTexts())
+        verify(cloudRepository, never()).streamResponseWithParams(any(), any(), any(), any())
+    }
+
+    @Test
+    fun `execution admission failure reaches cloud only when fallback remains authorized`() = runTest {
+        assertTrue(repository.initializeLocalModel())
+        whenever(localModelManager.deviceCapability()).thenReturn(deviceProfile().copy(availableMemBytes = 32_000_000L))
+        whenever(cloudRepository.streamResponseWithParams(any(), any(), any(), any())).thenReturn(flowOf(delta("cloud"), completed()))
+        val session = GenerationSession().apply {
+            bindRoutingDecision(RoutingDecision(Route.LOCAL_THEN_CLOUD, emptyList(), cloudAllowed = true))
+        }
+        val events = repository.streamResponse(HybridAiRepository.Mode.LOCAL, session, "rules", "hello").toList()
+        assertTrue((events.first() as GenerationEvent.Failed).fallbackPlanned)
+        assertEquals(listOf("cloud"), events.deltaTexts())
+        verify(localEngine, never()).streamResponse(any(), any(), any(), any())
+    }
+
+    @Test
+    fun `execution admission failure cannot upload private input`() = runTest {
+        assertTrue(repository.initializeLocalModel())
+        whenever(localModelManager.deviceCapability()).thenReturn(deviceProfile().copy(availableMemBytes = 32_000_000L))
+        val session = GenerationSession().apply { bindRoutingDecision(RoutingDecision(Route.LOCAL, emptyList())) }
+        val events = repository.streamResponse(HybridAiRepository.Mode.LOCAL, session, "rules", "private", route = Route.LOCAL).toList()
+        assertFalse((events.single() as GenerationEvent.Failed).fallbackPlanned)
+        verify(cloudRepository, never()).streamResponseWithParams(any(), any(), any(), any())
+    }
+
+    @Test
+    fun `unavailable private request never initializes or reaches cloud`() = runTest {
+        modelState.value = null
+        val decision = repository.selectRouteForGeneration(true, true, PrivacyLevel.PRIVATE, TaskComplexity.SIMPLE)
+        assertFalse(decision.isExecutable)
+        val session = GenerationSession().apply { bindRoutingDecision(decision) }
+        val events = repository.streamResponse(HybridAiRepository.Mode.CLOUD, session, "rules", "private").toList()
+        assertTrue(events.single() is GenerationEvent.Failed)
+        verify(localEngine, never()).initialize(any())
+        verify(cloudRepository, never()).streamResponseWithParams(any(), any(), any(), any())
+    }
+
+    @Test
+    fun `local only policy cannot be replaced by an inconsistent fallback route`() = runTest {
+        val session = GenerationSession().apply { bindRoutingDecision(RoutingDecision(Route.LOCAL, emptyList())) }
+        whenever(localEngine.streamResponse(any(), any(), any(), any())).thenReturn(flowOf(
+            GenerationEvent.Failed(Backend.MNN, GenerationError(GenerationErrorType.MODEL_RUNTIME, "failed"), "")
+        ))
+        val events = repository.streamResponse(HybridAiRepository.Mode.LOCAL, session, "rules", "private",
+            route = Route.LOCAL_THEN_CLOUD).toList()
+        assertTrue(events.last() is GenerationEvent.Failed)
+        verify(cloudRepository, never()).streamResponseWithParams(any(), any(), any(), any())
+    }
+
+    @Test
+    fun `changed metered network prevents automatic fallback`() = runTest {
+        whenever(localEngine.streamResponse(any(), any(), any(), any())).thenReturn(flow {
+            whenever(routingContextProvider.networkState()).thenReturn(NetworkState.METERED)
+            emit(GenerationEvent.Failed(Backend.MNN, GenerationError(GenerationErrorType.MODEL_RUNTIME, "failed"), ""))
+        })
+        repository.streamResponse(HybridAiRepository.Mode.LOCAL, GenerationSession(), "rules", "question").toList()
+        verify(cloudRepository, never()).streamResponseWithParams(any(), any(), any(), any())
     }
 
     @Test
     fun `cloud mode delegates to CloudChatRepository`() = runTest {
-        whenever(cloudRepository.streamResponse(any(), any(), any())).thenReturn(
+        whenever(cloudRepository.streamResponseWithParams(any(), any(), any(), any())).thenReturn(
             flowOf(delta("Hello"), delta(" World"), completed())
         )
 
@@ -96,7 +203,7 @@ class HybridAiRepositoryTest {
 
         assertEquals(listOf("Hello", " World"), events.deltaTexts())
         assertEquals(HybridAiRepository.Mode.CLOUD, repository.activeMode.value)
-        verify(cloudRepository).streamResponse("system", "user", emptyList())
+        verify(cloudRepository).streamResponseWithParams("system", "user", emptyList(), GenerationParams())
     }
 
     @Test
@@ -210,7 +317,7 @@ class HybridAiRepositoryTest {
         whenever(localEngine.streamResponse(any(), any(), any(), any())).thenReturn(
             flow { throw IllegalStateException("no model") }
         )
-        whenever(cloudRepository.streamResponse(any(), any(), any())).thenReturn(
+        whenever(cloudRepository.streamResponseWithParams(any(), any(), any(), any())).thenReturn(
             flowOf(delta("cloud fallback"), completed())
         )
 
@@ -225,7 +332,7 @@ class HybridAiRepositoryTest {
         assertEquals(GenerationErrorType.MODEL_RUNTIME, (events.first() as GenerationEvent.Failed).error.type)
         assertEquals(listOf("cloud fallback"), events.deltaTexts())
         assertEquals(HybridAiRepository.Mode.CLOUD, repository.activeMode.value)
-        verify(cloudRepository).streamResponse("system", "user", emptyList())
+        verify(cloudRepository).streamResponseWithParams("system", "user", emptyList(), GenerationParams())
     }
 
     @Test
@@ -234,7 +341,7 @@ class HybridAiRepositoryTest {
             emit(delta("partial local"))
             throw IllegalStateException("native stopped")
         })
-        whenever(cloudRepository.streamResponse(any(), any(), any())).thenReturn(
+        whenever(cloudRepository.streamResponseWithParams(any(), any(), any(), any())).thenReturn(
             flowOf(delta("cloud fallback"), completed())
         )
 
@@ -258,7 +365,7 @@ class HybridAiRepositoryTest {
             emit(delta("partial local"))
             throw IllegalStateException("native stopped")
         })
-        whenever(cloudRepository.streamResponse(any(), any(), any())).thenReturn(flow {
+        whenever(cloudRepository.streamResponseWithParams(any(), any(), any(), any())).thenReturn(flow {
             emit(
                 GenerationEvent.Failed(
                     backend = Backend.CLOUD,
@@ -298,7 +405,7 @@ class HybridAiRepositoryTest {
 
         assertTrue(thrown is CancellationException)
         assertEquals(HybridAiRepository.Mode.LOCAL, repository.activeMode.value)
-        verify(cloudRepository, never()).streamResponse(any(), any(), any())
+        verify(cloudRepository, never()).streamResponseWithParams(any(), any(), any(), any())
     }
 
     @Test
@@ -388,25 +495,172 @@ class HybridAiRepositoryTest {
     }
 
     @Test
-    fun `prepare model deletion releases the engine before clearing the model`() = runTest {
-        whenever(localModelManager.clearCurrentModel()).thenReturn(Unit)
+    fun `model deletion releases the engine before clearing and deleting the model`() = runTest {
+        whenever(localModelManager.deleteModel(sampleModel().modelDir)).thenReturn(true)
 
-        val prepared = repository.prepareModelForDeletion(sampleModel().modelDir)
+        val deleted = repository.deleteLocalModel(sampleModel().modelDir)
 
-        assertTrue(prepared)
+        assertTrue(deleted)
         val ordered = inOrder(localEngine, localModelManager)
         ordered.verify(localEngine).release()
         ordered.verify(localModelManager).clearCurrentModel()
-        repository.finishModelDeletion()
+        ordered.verify(localModelManager).deleteModel(sampleModel().modelDir)
     }
 
     @Test
-    fun `prepare model deletion is a no-op for a different model`() = runTest {
-        val prepared = repository.prepareModelForDeletion("/models/other")
+    fun `deleting a different model preserves the active runtime`() = runTest {
+        whenever(localModelManager.deleteModel("/models/other")).thenReturn(true)
+        val deleted = repository.deleteLocalModel("/models/other")
 
-        assertTrue(prepared)
+        assertTrue(deleted)
         verify(localEngine, never()).release()
-        repository.finishModelDeletion()
+        verify(localModelManager).deleteModel("/models/other")
+    }
+
+    @Test
+    fun `selecting a model waits until an in flight deletion finishes`() = runBlocking<Unit> {
+        repository = newRepository(Dispatchers.IO)
+        withTimeout(5_000) {
+            val entered = CompletableDeferred<Unit>()
+            val finish = CompletableDeferred<Unit>()
+            val other = sampleModel(id = "other", modelDir = "/models/other")
+            whenever(localModelManager.deleteModel(other.modelDir)).thenAnswer {
+                runBlocking {
+                    entered.complete(Unit)
+                    finish.await()
+                    false
+                }
+            }
+            whenever(localModelManager.selectModel(other.modelDir)).thenReturn(other)
+            val deletion = async { repository.deleteLocalModel(other.modelDir) }
+            try {
+                entered.await()
+                val selection = async(Dispatchers.IO, start = CoroutineStart.UNDISPATCHED) {
+                    repository.selectLocalModel(other.modelDir)
+                }
+                assertFalse(selection.isCompleted)
+                verify(localModelManager, never()).selectModel(other.modelDir)
+                finish.complete(Unit)
+                assertFalse(deletion.await())
+                assertEquals(other, selection.await())
+                val ordered = inOrder(localModelManager)
+                ordered.verify(localModelManager).deleteModel(other.modelDir)
+                ordered.verify(localModelManager).selectModel(other.modelDir)
+            } finally {
+                finish.complete(Unit)
+            }
+        }
+    }
+
+    @Test
+    fun `failed deletion does not leave initialization blocked`() = runTest {
+        whenever(localModelManager.deleteModel("/models/other")).thenAnswer {
+            throw java.io.IOException("delete failed")
+        }
+
+        assertFalse(repository.deleteLocalModel("/models/other"))
+        assertTrue(repository.initializeLocalModel())
+    }
+
+    @Test
+    fun `release failure never proceeds to file deletion`() = runTest {
+        repository.initializeLocalModel()
+        whenever(localEngine.release()).thenThrow(IllegalStateException("close failed"))
+
+        assertFalse(repository.deleteLocalModel(sampleModel().modelDir))
+
+        verify(localModelManager, never()).clearCurrentModel()
+        verify(localModelManager, never()).deleteModel(any())
+    }
+
+    @Test
+    fun `initialization cancellation survives a cleanup failure`() = runTest {
+        val cancellation = CancellationException("cancelled")
+        val cleanupError = IllegalStateException("close failed")
+        whenever(localEngine.initialize(any())).thenAnswer { throw cancellation }
+        whenever(localEngine.release()).thenThrow(cleanupError)
+
+        val failure = runCatching { repository.initializeLocalModel() }.exceptionOrNull()
+
+        assertTrue(failure is CancellationException)
+        assertTrue(generateSequence(failure) { it.cause }.any { it === cancellation })
+        assertEquals(listOf(cleanupError), cancellation.suppressed.toList())
+        verify(localModelManager, never()).recordLocalLoadFailure(any(), any(), any())
+    }
+
+    @Test
+    fun `two historical failures allow a local probe after backoff`() = runTest {
+        whenever(localModelManager.recentFailureCount(sampleModel().id)).thenReturn(2)
+        whenever(localModelManager.recentFailure(sampleModel().id)).thenReturn(
+            LocalModelFailure(2, System.currentTimeMillis() - 120_000L, LocalModelFailureType.TRANSIENT)
+        )
+
+        assertEquals(HybridAiRepository.Mode.LOCAL, repository.selectModeForGeneration(false))
+        verify(localEngine).initialize(sampleModel())
+        verify(localModelManager, never()).recordLocalLoadSuccess(any())
+    }
+
+    @Test
+    fun `deactivation prevents a late local failure from starting cloud generation`() = runBlocking<Unit> {
+        repository = newRepository(Dispatchers.IO)
+        withTimeout(5_000) {
+            val entered = CompletableDeferred<Unit>()
+            val finish = CompletableDeferred<Unit>()
+            whenever(localEngine.streamResponse(any(), any(), any(), any())).thenReturn(flow {
+                emit(delta("partial"))
+                entered.complete(Unit)
+                finish.await()
+                throw IllegalStateException("late failure")
+            })
+            val generation = async {
+                repository.streamResponse(
+                    HybridAiRepository.Mode.LOCAL, GenerationSession(), "system", "user"
+                ).toList()
+            }
+            try {
+                entered.await()
+                repository.clearLocalModel()
+                finish.complete(Unit)
+                val events = generation.await()
+                assertEquals(listOf("partial"), events.deltaTexts())
+                assertEquals(1, events.filterIsInstance<GenerationEvent.Stopped>().size)
+                verify(cloudRepository, never()).streamResponseWithParams(any(), any(), any(), any())
+                verify(localModelManager, never()).recordLocalLoadFailure(any(), any(), any())
+            } finally {
+                finish.complete(Unit)
+            }
+        }
+    }
+
+    @Test
+    fun `a second local generation cannot replace the active session`() = runBlocking<Unit> {
+        repository = newRepository(Dispatchers.IO)
+        withTimeout(5_000) {
+            val entered = CompletableDeferred<Unit>()
+            val finish = CompletableDeferred<Unit>()
+            whenever(localEngine.streamResponse(any(), any(), any(), any())).thenReturn(flow {
+                entered.complete(Unit)
+                finish.await()
+                emit(completed())
+            })
+            val first = async {
+                repository.streamResponse(
+                    HybridAiRepository.Mode.LOCAL, GenerationSession(), "system", "first"
+                ).toList()
+            }
+            try {
+                entered.await()
+                val second = repository.streamResponse(
+                    HybridAiRepository.Mode.LOCAL, GenerationSession(), "system", "second"
+                ).toList()
+                assertEquals(1, second.filterIsInstance<GenerationEvent.Failed>().size)
+                verify(localEngine).streamResponse(any(), eq("first"), any(), any())
+                verify(localEngine, never()).streamResponse(any(), eq("second"), any(), any())
+            } finally {
+                finish.complete(Unit)
+                first.await()
+            }
+        }
     }
 
     @Test
@@ -477,13 +731,16 @@ class HybridAiRepositoryTest {
     }
 
     private suspend fun awaitAssertion(assertion: () -> Unit) {
-        withTimeout(1_000) {
-            while (true) {
-                try {
-                    assertion()
-                    return@withTimeout
-                } catch (error: AssertionError) {
-                    delay(10)
+        // Observe the real IO worker without advancing the test scheduler's virtual timeout.
+        withContext(Dispatchers.Default) {
+            withTimeout(1_000) {
+                while (true) {
+                    try {
+                        assertion()
+                        return@withTimeout
+                    } catch (error: AssertionError) {
+                        delay(10)
+                    }
                 }
             }
         }

@@ -60,7 +60,13 @@ object NetworkModule {
             }
             val anonymousAllowed = chain.request().allowsAnonymousRead()
             val publicList = chain.request().isPublicPersonaList()
-            val token = if (publicList) {
+            val boundToken = chain.request().header("Authorization")?.removePrefix("Bearer ")
+            val token = if (boundToken != null) {
+                if (boundToken.isBlank() || tokenProvider.currentToken() != boundToken) {
+                    throw IOException("登录身份已变化，已停止旧请求")
+                }
+                boundToken
+            } else if (publicList) {
                 null
             } else if (anonymousAllowed) {
                 tokenProvider.currentToken()
@@ -95,7 +101,8 @@ object NetworkModule {
             .authenticator { _, response ->
                 if (response.retryCount() >= 2) return@authenticator null
                 val previousToken = response.request.header("Authorization")
-                tokenProvider.invalidateSession()
+                previousToken?.removePrefix("Bearer ")?.takeIf { it.isNotBlank() }
+                    ?.let(tokenProvider::invalidateSession)
                 if (response.request.allowsAnonymousRead() && previousToken != null) {
                     return@authenticator response.request.newBuilder()
                         .removeHeader("Authorization")
@@ -105,6 +112,8 @@ object NetworkModule {
             }
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
+            .writeTimeout(30, TimeUnit.SECONDS)
+            .callTimeout(120, TimeUnit.SECONDS)
             .build()
     }
 
@@ -113,8 +122,8 @@ object NetworkModule {
     @Named("sse")
     fun provideSseOkHttpClient(client: OkHttpClient): OkHttpClient {
         return client.newBuilder()
-            .readTimeout(0, TimeUnit.MILLISECONDS)
-            .callTimeout(0, TimeUnit.MILLISECONDS)
+            .readTimeout(90, TimeUnit.SECONDS)
+            .callTimeout(10, TimeUnit.MINUTES)
             .build()
     }
 
@@ -134,8 +143,27 @@ object NetworkModule {
     fun provideAuthRetrofit(config: BackendConfig): Retrofit {
         return Retrofit.Builder()
             .baseUrl(config.baseUrl)
+            .client(provideAuthOkHttpClient(config))
             .addConverterFactory(GsonConverterFactory.create())
             .build()
+    }
+
+    internal fun provideAuthOkHttpClient(config: BackendConfig): OkHttpClient {
+        return OkHttpClient.Builder()
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .writeTimeout(30, TimeUnit.SECONDS)
+            .callTimeout(60, TimeUnit.SECONDS)
+            .addInterceptor { chain ->
+                val endpoint = config.baseUrl.toHttpUrlOrNull()
+                val url = chain.request().url
+                if (!config.isConfigured || endpoint == null || !endpoint.isHttps ||
+                    url.scheme != endpoint.scheme || url.host != endpoint.host || url.port != endpoint.port
+                ) throw IOException("拒绝向未配置或其他服务发送登录信息")
+                chain.proceed(chain.request())
+            }.build()
     }
 
     @Provides

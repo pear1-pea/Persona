@@ -21,9 +21,7 @@ class SwitchingPersonaRepository @Inject constructor(
      * automatically, and the two sources are never merged by id.
      */
 
-    private fun isCloudPreferred(): Boolean {
-        return authManager.isLoggedIn.value && authManager.currentUserId != null
-    }
+    private suspend fun isCloudPreferred(): Boolean = authManager.requestIdentity().token != null
 
     override suspend fun getPersonas(): List<Persona> = readWithFallback(
         operation = "get public personas",
@@ -31,10 +29,11 @@ class SwitchingPersonaRepository @Inject constructor(
         room = { roomImpl.getPublicSeedPersonas() }
     )
 
-    override suspend fun getMyPersonas(): List<Persona> =
+    override suspend fun getMyPersonas(): List<Persona> = authManager.withIdentity {
         if (isCloudPreferred()) remoteImpl.getMyPersonas() else roomImpl.getMyPersonas()
+    }
 
-    override suspend fun addPersona(name: String, traits: List<String>, backstory: String, isPublic: Boolean) {
+    override suspend fun addPersona(name: String, traits: List<String>, backstory: String, isPublic: Boolean) = authManager.withIdentity {
         if (isCloudPreferred()) {
             remoteImpl.addPersona(name, traits, backstory, isPublic)
         } else {
@@ -48,7 +47,7 @@ class SwitchingPersonaRepository @Inject constructor(
         traits: List<String>,
         backstory: String,
         isPublic: Boolean
-    ) {
+    ) = authManager.withIdentity {
         if (isCloudPreferred()) {
             remoteImpl.updatePersona(id, name, traits, backstory, isPublic)
         } else {
@@ -56,19 +55,20 @@ class SwitchingPersonaRepository @Inject constructor(
         }
     }
 
-    override suspend fun getPersonaById(id: String): Persona? {
-        if (!isCloudPreferred()) return roomImpl.getPersonaById(id)
-        return try {
+    override suspend fun getPersonaById(id: String): Persona? = authManager.withIdentity {
+        if (!isCloudPreferred()) return@withIdentity roomImpl.getPersonaById(id)
+        try {
             remoteImpl.getPersonaById(id) ?: roomImpl.getPublicSeedPersonaById(id)
         } catch (error: CancellationException) {
             throw error
         } catch (error: Exception) {
+            authManager.requestIdentity()
             Log.w(TAG, "Backend persona detail unavailable; checking public Room seed", error)
             roomImpl.getPublicSeedPersonaById(id)
         }
     }
 
-    override suspend fun deletePersona(id: String) {
+    override suspend fun deletePersona(id: String) = authManager.withIdentity {
         if (isCloudPreferred()) {
             remoteImpl.deletePersona(id)
         } else {
@@ -80,13 +80,14 @@ class SwitchingPersonaRepository @Inject constructor(
         operation: String,
         remote: suspend () -> List<Persona>,
         room: suspend () -> List<Persona>
-    ): List<Persona> {
-        if (!isCloudPreferred()) return room()
-        return try {
+    ): List<Persona> = authManager.withIdentity {
+        if (!isCloudPreferred()) return@withIdentity room()
+        try {
             remote()
         } catch (error: CancellationException) {
             throw error
         } catch (error: Exception) {
+            authManager.requestIdentity()
             Log.w(TAG, "Backend persona source unavailable; using Room for $operation", error)
             room()
         }

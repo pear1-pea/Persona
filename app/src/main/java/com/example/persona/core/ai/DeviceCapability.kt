@@ -54,10 +54,18 @@ internal fun evaluateModelAdmission(
     modelSizeBytes: Long,
     contextWindow: Int,
     reservedOutputTokens: Int,
-    recentFailureCount: Int
+    recentFailureCount: Int,
+    modelAlreadyLoaded: Boolean = false
 ): ModelAdmissionReport {
     val blockedReasons = mutableListOf<String>()
     val riskReasons = mutableListOf<String>()
+
+    // This is a minimum load guard, not a prediction of the model's peak memory.
+    val minimumAvailableBytes = if (modelAlreadyLoaded) 128L * 1024L * 1024L
+        else maxOf(modelSizeBytes, 128L * 1024L * 1024L)
+    if (profile.availableMemBytes >= 0 && profile.availableMemBytes < minimumAvailableBytes) {
+        blockedReasons += "当前可用内存不足以安全加载模型，请释放资源后重试"
+    }
 
     if (requiredAbis.isNotEmpty() && profile.abi !in requiredAbis) {
         blockedReasons += "当前 ABI ${profile.abi} 不在模型 requiredAbis 中"
@@ -83,9 +91,7 @@ internal fun evaluateModelAdmission(
     if (profile.nativePssBytes > 0 && profile.availableMemBytes < profile.nativePssBytes / 2L) {
         riskReasons += "Native PSS 已接近当前可用内存"
     }
-    if (profile.freeStorageBytes < MIN_FREE_STORAGE_BLOCK_BYTES) {
-        blockedReasons += "模型目录可用存储不足"
-    } else if (profile.freeStorageBytes < MIN_FREE_STORAGE_RISK_BYTES) {
+    if (profile.freeStorageBytes < MIN_FREE_STORAGE_RISK_BYTES) {
         riskReasons += "模型目录可用存储偏低"
     }
     when (profile.thermalStatus) {
@@ -102,9 +108,9 @@ internal fun evaluateModelAdmission(
         riskReasons += "电量偏低"
     }
     if (recentFailureCount >= 2) {
-        riskReasons += "近期本地加载失败次数较多，本次默认使用云端"
+        riskReasons += "近期本地加载失败次数较多，请关注重试结果"
     } else if (recentFailureCount == 1) {
-        riskReasons += "近期发生过本地加载失败，本次默认使用云端"
+        riskReasons += "近期发生过本地加载失败，请关注重试结果"
     }
     if (contextWindow > 4096 && profile.ramGb < 6) {
         riskReasons += "context window 较大，当前 RAM 可能不足"
@@ -126,5 +132,4 @@ private fun Long.toRoundedGb(): Int {
 }
 
 private const val BYTES_PER_GB = 1_000_000_000L
-private const val MIN_FREE_STORAGE_BLOCK_BYTES = 100L * 1024L * 1024L
 private const val MIN_FREE_STORAGE_RISK_BYTES = 512L * 1024L * 1024L
