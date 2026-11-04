@@ -61,7 +61,25 @@ class SessionTokenStore @Inject constructor(
     @Synchronized
     fun completeAccountDeletion(ownerId: String) {
         check(preferences.edit()
-            .putStringSet(KEY_PENDING_DELETIONS, pendingDeletedOwners() - ownerId).commit())
+            .putStringSet(KEY_PENDING_DELETIONS, pendingDeletedOwners() - ownerId)
+            .remove(KEY_PENDING_PERSONA_DELETIONS + ownerId).commit())
+    }
+
+    internal fun pendingPersonaDeletions(ownerId: String): Set<String> =
+        preferences.getStringSet(KEY_PENDING_PERSONA_DELETIONS + ownerId, emptySet())?.toSet().orEmpty()
+
+    @Synchronized
+    internal fun markPersonaDeletionPending(ownerId: String, personaId: String) {
+        require(ownerId.isNotBlank() && ownerId != "OFFLINE_USER" && ownerId != "system")
+        require(personaId.isNotBlank())
+        check(preferences.edit().putStringSet(KEY_PENDING_PERSONA_DELETIONS + ownerId,
+            pendingPersonaDeletions(ownerId) + personaId).commit())
+    }
+
+    @Synchronized
+    internal fun completePersonaDeletion(ownerId: String, personaId: String) {
+        check(preferences.edit().putStringSet(KEY_PENDING_PERSONA_DELETIONS + ownerId,
+            pendingPersonaDeletions(ownerId) - personaId).commit())
     }
 
     private fun secretKey(): SecretKey {
@@ -118,5 +136,6 @@ class SessionTokenStore @Inject constructor(
         const val KEY_USER_ID = "user_id"
         const val KEY_EMAIL = "email"
         const val KEY_PENDING_DELETIONS = "pending_deleted_owners"
+        const val KEY_PENDING_PERSONA_DELETIONS = "pending_persona_deletions."
     }
 }

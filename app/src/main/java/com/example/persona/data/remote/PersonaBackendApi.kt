@@ -2,6 +2,7 @@ package com.example.persona.data.remote
 
 import com.example.persona.data.remote.dto.CreatePersonaRequest
 import com.example.persona.data.remote.dto.PersonaDto
+import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.DELETE
 import retrofit2.http.GET
@@ -29,5 +30,5 @@ interface PersonaBackendApi {
     ): PersonaDto
 
     @DELETE("api/personas/{id}")
-    suspend fun deletePersona(@Path("id") id: String)
+    suspend fun deletePersona(@Path("id") id: String): Response<Void>
 }

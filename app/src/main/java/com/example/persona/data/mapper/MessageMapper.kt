@@ -12,7 +12,9 @@ fun MessageEntity.toDomain(): Message {
         isFromUser = isFromUser,
         timestamp = timestamp,
         status = runCatching { MessageStatus.valueOf(status) }
-            .getOrDefault(MessageStatus.NORMAL)
+            .getOrDefault(MessageStatus.NORMAL),
+        localOnly = localOnly,
+        excludeFromHistory = excludeFromHistory
     )
 }
 
@@ -24,6 +26,8 @@ fun Message.toEntity(ownerId: String = "OFFLINE_USER"): MessageEntity {
         content = content,
         isFromUser = isFromUser,
         timestamp = timestamp,
-        status = status.name
+        status = status.name,
+        localOnly = localOnly,
+        excludeFromHistory = excludeFromHistory
     )
 }

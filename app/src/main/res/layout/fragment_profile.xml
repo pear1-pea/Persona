@@ -56,14 +56,14 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="3 Created  |  12 Following  |  12 Follower"
+                android:id="@+id/tvPersonaCounts"
                 android:textColor="@color/text_secondary"/>
         </LinearLayout>
 
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="My Personas"
+            android:text="@string/product_my_personas"
             android:textColor="@color/accent_cyan"
             android:textStyle="bold"
             android:layout_marginTop="32dp"
@@ -97,7 +97,7 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="Create New Persona"
+                    android:text="@string/product_create_persona"
                     android:textColor="@color/primary_purple"
                     android:textStyle="bold"
                     android:layout_marginStart="8dp"/>

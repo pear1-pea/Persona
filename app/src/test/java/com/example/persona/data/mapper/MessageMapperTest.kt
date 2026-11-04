@@ -7,6 +7,12 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class MessageMapperTest {
+    @Test
+    fun `privacy and memory history flags survive a database round trip`() {
+        val original = Message("private", "persona", "fact", false,
+            localOnly = true, excludeFromHistory = true)
+        assertEquals(original, original.toEntity("owner").toDomain())
+    }
 
     private val entity = MessageEntity(
         id = "msg-1",

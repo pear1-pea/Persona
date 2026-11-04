@@ -98,7 +98,15 @@ class ProfileFragment : Fragment() {
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.myPersonas.collect { list ->
-                    adapter.submitList(list)
+                    // Do not leave the previous account's cards visible during a diff.
+                    adapter.submitList(list.takeIf { it.isNotEmpty() })
+                    val counts = viewModel.counts
+                    binding.tvPersonaCounts.text = getString(
+                        R.string.product_persona_counts,
+                        counts.total,
+                        counts.publicCount,
+                        counts.privateCount
+                    )
                 }
             }
         }

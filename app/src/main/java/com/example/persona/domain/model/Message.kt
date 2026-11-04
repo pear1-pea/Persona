@@ -13,5 +13,7 @@ data class Message(
     val content: String,
     val isFromUser: Boolean, // true = user, false = AI
     val timestamp: Long = System.currentTimeMillis(),
-    val status: MessageStatus = MessageStatus.NORMAL
+    val status: MessageStatus = MessageStatus.NORMAL,
+    val localOnly: Boolean = false,
+    val excludeFromHistory: Boolean = false
 )

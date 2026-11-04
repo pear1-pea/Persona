@@ -12,6 +12,8 @@ interface ChatRepository {
 
     suspend fun getRecentMessages(personaId: String, limit: Int = 12): List<Message>
 
+    suspend fun getMessageById(id: String): Message?
+
     suspend fun saveMessage(message: Message, persona: Persona)
 
     suspend fun updateMessageContent(

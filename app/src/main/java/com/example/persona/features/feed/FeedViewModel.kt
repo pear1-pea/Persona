@@ -1,19 +1,21 @@
 package com.example.persona.features.feed
 
-import android.util.Log
 import androidx.lifecycle.viewModelScope
 import com.example.persona.core.auth.AuthManager
 import com.example.persona.core.base.BaseViewModel
 import com.example.persona.domain.model.Persona
 import com.example.persona.domain.repository.PersonaRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import javax.inject.Inject
-
-private const val TAG = "FeedViewModel"
 
 @HiltViewModel
 class FeedViewModel @Inject constructor(
@@ -21,24 +23,43 @@ class FeedViewModel @Inject constructor(
     private val authManager: AuthManager
 ) : BaseViewModel() {
 
-    // Use StateFlow to manage UI state
     private val _uiState = MutableStateFlow<List<Persona>>(emptyList())
-    val uiState: StateFlow<List<Persona>> = _uiState
+    val uiState: StateFlow<List<Persona>> = _uiState.asStateFlow()
+
+    private var refreshJob: Job? = null
+    private var refreshVersion = 0L
+    private var listIdentity = authManager.identity.value
 
     init {
-        // Load personas regardless of login state
-        loadPersonas()
+        viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            authManager.identity.collect {
+                refresh()
+            }
+        }
     }
 
-    private fun loadPersonas() {
-        launchCatching(
+    fun refresh() {
+        val version = ++refreshVersion
+        val identity = authManager.identity.value
+        if (listIdentity !== identity) {
+            listIdentity = identity
+            _uiState.value = emptyList()
+        }
+        refreshJob?.cancel()
+        refreshJob = launchCatching(
             block = {
-                val allPersonas = repository.getPersonas()
-                _uiState.value = allPersonas
+                authManager.withIdentity(identity) {
+                    val personas = repository.getPersonas()
+                    currentCoroutineContext().ensureActive()
+                    authManager.requireIdentity(identity)
+                    if (version == refreshVersion) _uiState.value = personas
+                }
             },
             onError = { error ->
-                Log.e(TAG, "Error loading personas", error)
-                emitError("Failed to load personas: ${error.localizedMessage}")
+                if (error is CancellationException) throw error
+                if (version == refreshVersion && authManager.identity.value === identity) {
+                    throw error
+                }
             }
         )
     }

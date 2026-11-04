@@ -29,6 +29,15 @@ The opt-in isolated package and real dual-model lifecycle command are documented
 the native plan; dated [M1 acceptance](../qa/m1-status-2026-10-28.md) records the initial
 lifecycle results. [P1 acceptance](../qa/p1-status-2026-10-28.md) records the subsequent
 session, SAF and performance acceptance separately.
+[P2 first-batch acceptance](../qa/p2-product-flow-status-2026-10-29.md) records product
+refresh, strict creation validation, recreation and interrupted-message recovery.
+
+The isolated device classes `data.local.InterruptedMessageRecoveryInstrumentedTest`
+and `features.ProductFlowInstrumentedTest` cover six cases. Run
+`features.ChatProcessRecoveryInstrumentedTest` separately with
+`-e p2RecoveryPhase prepare`, force-stop only `com.example.persona.validation`, then
+run with `-e p2RecoveryPhase verify`. Require each phase's `OK (1 test)`; preparation
+alone does not establish recovery. Fixtures are synthetic and validation-package-only.
 
 ## Backend
 
@@ -59,6 +68,8 @@ smoke. Without `TEST_DATABASE_URL` the database tests skip, which is not accepta
 - Backend `npm run typecheck` + `npm test`.
 - Backend Postgres service + `npm run test:integration` + `npm run smoke`.
 - Model packager `python -m unittest discover`.
+- Synthetic Persona evaluation schema, Python tests and reference contracts
+  (candidate workflow; no P2 remote run yet).
 - A manual `workflow_dispatch` Windows build and JVM tests.
 
 Available logs and reports are retained on both success and failure. Configuration
@@ -80,6 +91,56 @@ Use `scripts/verify-windows.ps1` for timestamped command logs and a JSON summary
 running test backend; otherwise smoke remains Pending.
 
 ## Rules
+
+P2 memory candidate checks and Windows handoff are recorded in
+[p2-memory-status-2026-10-29.md](../qa/p2-memory-status-2026-10-29.md).
+The synthetic evaluation job runs schema validation, Python tool tests and reference
+contracts only; it never invokes a model or establishes Android application conformance.
+Run locally with `python3 -m unittest discover -s tools/persona-eval/tests -v`.
+
+The M5 component adapter candidate and its Mac checks are recorded in
+[p2-adapter-status-2026-10-30.md](../qa/p2-adapter-status-2026-10-30.md).
+`tools/persona-eval/run_device.py --serial <serial> --run-id <new-id>` builds and
+runs the isolated `evaluation.M5RoomAdapterInstrumentedTest`; no model is needed.
+It refuses preinstalled validation packages, binds source/bundle/APK receipts and
+only removes packages it successfully installed. Compare exits 1 for unsupported
+cases even when the observable static cases pass. Component observations are not
+executor dispatch or model-quality results. The v2 adapter passed 14 static device
+cases with 12 unsupported; [Windows acceptance](../qa/p2-adapter-windows-status-2026-10-30.md)
+records the initial null-serialization failure, fix, APK receipts and cleanup.
+
+Add `--with-lifecycle --controlled-network` for v4 request orchestration checks on
+a metered hotspot. Production still reads the physical network; only the explicit
+test mode injects policy states, with a mandatory metered-denial control and no
+real cloud/model execution. [Lifecycle acceptance](../qa/p2-lifecycle-status-2026-10-30.md)
+records 20 pass / 6 unsupported, 412 JVM tests and the late-notification/source-deletion fixes.
+
+`P2MemoryRuntimeInstrumentedTest` is opt-in (`runP2MemoryRuntime=true`) and only
+accepts `com.example.persona.validation`. It uses real Room, ChatViewModel and MNN,
+with cloud blocked. Provision a verified private `files/model-sources/primary`
+package first; `memoryModelSource=secondary` selects the existing 1.5B fixture.
+`memoryProbeTemperature=0` is a diagnostic test override, never a production result.
+The test reopens its database between save/revise/delete stages and waits at most
+three minutes per stage for severe heat to subside, without bypassing admission.
+Run IDs preserve both failures and successes; export private synthetic artifacts
+before uninstalling the isolated packages. This one scenario does not cover the
+full M5 dataset or replace human review.
+
+For fixed subjective fixtures, `tools/persona-eval/run_llm_device.py` builds the isolated
+APKs and executes the real Room/ChatViewModel/MNN path using cached pinned model packages.
+It freezes configuration/source receipts and retains failed or unsupported rows.
+See [the actual-model workflow](../../tools/persona-eval/REAL_MODEL.md) and
+[P2 closure checks](../qa/p2-closure-status-2026-10-30.md). The CI reference job does not run it.
+`review_packet.py` creates local anonymous human forms; `check_human_review.py` validates
+submitted annotations without assigning scores or approving a release.
+The [2026-11-04 Mac checks and human results](../qa/p2-review-status-2026-11-04.md)
+record the subsequent network-policy race regression and remaining model-quality defects.
+The earlier Windows build applies to its recorded source snapshot. Rebuild and rerun the
+full Gradle suite after the new production fix.
+
+No-content endpoint regression tests use real Retrofit with a controlled HTTP transport:
+`NoContentResponseIntegrationTest` covers 204 success and rejected HTTP requests.
+Do not replace these with only mocked AuthApi success; that misses Retrofit's body adapter.
 
 - When changing app behavior, add or update a unit test in the matching package.
 - When changing auth, ownership, or chat proxying, also run the backend smoke test.

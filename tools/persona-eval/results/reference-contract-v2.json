@@ -1,0 +1,119 @@
+{
+  "dataset_version": "m5-zh-explicit-v2",
+  "dataset_sha256": "3cda2cbd2964c3de2ac17325a822cda1aeb24dc554cae562bcd444641d5fc48e",
+  "config_version": "m5-config-v2",
+  "split": "all",
+  "run_at": "2026-10-29T12:32:41.900341+00:00",
+  "evidence_kind": "reference_contract",
+  "results": [
+    {
+      "case_id": "dev-01",
+      "status": "pass"
+    },
+    {
+      "case_id": "dev-02",
+      "status": "pass"
+    },
+    {
+      "case_id": "dev-03",
+      "status": "pass"
+    },
+    {
+      "case_id": "dev-04",
+      "status": "pass"
+    },
+    {
+      "case_id": "dev-05",
+      "status": "pass"
+    },
+    {
+      "case_id": "dev-06",
+      "status": "pass"
+    },
+    {
+      "case_id": "dev-07",
+      "status": "pass"
+    },
+    {
+      "case_id": "dev-08",
+      "status": "pass"
+    },
+    {
+      "case_id": "dev-09",
+      "status": "pass"
+    },
+    {
+      "case_id": "dev-10",
+      "status": "pass"
+    },
+    {
+      "case_id": "dev-11",
+      "status": "pass"
+    },
+    {
+      "case_id": "dev-12",
+      "status": "pass"
+    },
+    {
+      "case_id": "dev-13",
+      "status": "pass"
+    },
+    {
+      "case_id": "dev-14",
+      "status": "pass"
+    },
+    {
+      "case_id": "dev-15",
+      "status": "pass"
+    },
+    {
+      "case_id": "dev-16",
+      "status": "pass"
+    },
+    {
+      "case_id": "dev-17",
+      "status": "pass"
+    },
+    {
+      "case_id": "dev-18",
+      "status": "pass"
+    },
+    {
+      "case_id": "heldout-01",
+      "status": "pass"
+    },
+    {
+      "case_id": "heldout-02",
+      "status": "pass"
+    },
+    {
+      "case_id": "heldout-03",
+      "status": "pass"
+    },
+    {
+      "case_id": "heldout-04",
+      "status": "pass"
+    },
+    {
+      "case_id": "heldout-05",
+      "status": "pass"
+    },
+    {
+      "case_id": "heldout-06",
+      "status": "pass"
+    },
+    {
+      "case_id": "heldout-07",
+      "status": "pass"
+    },
+    {
+      "case_id": "heldout-08",
+      "status": "pass"
+    }
+  ],
+  "counts": {
+    "pass": 26
+  },
+  "application_conformance": "not_run",
+  "llm_quality": "not_run"
+}

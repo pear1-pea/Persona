@@ -9,6 +9,7 @@ import com.example.persona.core.ai.GenerationErrorType
 import com.example.persona.core.ai.GenerationEvent
 import com.example.persona.core.ai.GenerationParams
 import com.example.persona.core.ai.GenerationMetrics
+import com.example.persona.core.ai.GenerationContext
 import com.example.persona.core.ai.GenerationSession
 import com.example.persona.core.ai.HybridRouter
 import com.example.persona.core.ai.InstalledModel
@@ -102,7 +103,7 @@ class HybridAiRepositoryTest {
             localEngine,
             localModelManager,
             router,
-            routingContextProvider,
+            routingContextProvider::networkState,
             observerScope.backgroundScope,
             dispatcher
         )
@@ -113,6 +114,127 @@ class HybridAiRepositoryTest {
     }
 
     private fun runTest(block: suspend TestScope.() -> Unit) = observerScope.runTest(testBody = block)
+
+    @Test
+    fun `fallback rebuilds context and never reuses local memory or partial output`() = runTest {
+        assertTrue(repository.initializeLocalModel())
+        whenever(localEngine.streamResponse(any(), any(), any(), any())).thenReturn(flow {
+            emit(delta("private partial"))
+            emit(GenerationEvent.Failed(Backend.MNN,
+                GenerationError(GenerationErrorType.MODEL_RUNTIME, "transient"), "private partial"))
+        })
+        whenever(cloudRepository.streamResponseWithParams(any(), any(), any(), any()))
+            .thenReturn(flowOf(delta("cloud"), completed()))
+        val calls = mutableListOf<Backend>()
+        val session = GenerationSession().apply {
+            bindRoutingDecision(RoutingDecision(Route.LOCAL_THEN_CLOUD, emptyList(), cloudAllowed = true))
+            bindContextProvider { backend ->
+                calls += backend
+                if (backend == Backend.MNN) GenerationContext("local secret", listOf(ChatMessage("user", "private history")), "local private question context")
+                else GenerationContext("cloud safe", listOf(ChatMessage("user", "public history")), "cloud safe question context")
+            }
+        }
+        repository.streamResponse(HybridAiRepository.Mode.LOCAL, session, "base", "question").toList()
+        assertEquals(listOf(Backend.MNN, Backend.CLOUD), calls)
+        verify(localEngine).streamResponse(any(), org.mockito.kotlin.eq("local private question context"), org.mockito.kotlin.eq(listOf(
+            ChatMessage("system", "local secret"), ChatMessage("user", "private history"))), any())
+        verify(cloudRepository).streamResponseWithParams(org.mockito.kotlin.eq("cloud safe"),
+            org.mockito.kotlin.eq("cloud safe question context"), org.mockito.kotlin.eq(listOf(ChatMessage("user", "public history"))), any())
+    }
+
+    @Test
+    fun `local generation fallback rechecks network after suspended cloud preparation`() = runTest {
+        assertTrue(repository.initializeLocalModel())
+        whenever(localEngine.streamResponse(any(), any(), any(), any())).thenReturn(flowOf(
+            delta("local partial"),
+            GenerationEvent.Failed(Backend.MNN,
+                GenerationError(GenerationErrorType.MODEL_RUNTIME, "transient"), "local partial")
+        ))
+        assertNetworkChangeBlocksPreparedFallback(NetworkState.METERED)
+        assertNetworkChangeBlocksPreparedFallback(NetworkState.OFFLINE)
+    }
+
+    @Test
+    fun `local admission fallback rechecks network after suspended cloud preparation`() = runTest {
+        assertTrue(repository.initializeLocalModel())
+        whenever(localModelManager.deviceCapability()).thenReturn(deviceProfile().copy(availableMemBytes = 32_000_000L))
+        assertNetworkChangeBlocksPreparedFallback(NetworkState.METERED)
+        assertNetworkChangeBlocksPreparedFallback(NetworkState.OFFLINE)
+        verify(localEngine, never()).streamResponse(any(), any(), any(), any())
+    }
+
+    @Test
+    fun `explicit authorized cloud mode still dispatches on a metered network`() = runTest {
+        whenever(cloudRepository.streamResponseWithParams(any(), any(), any(), any()))
+            .thenReturn(flowOf(delta("cloud"), completed()))
+        val session = GenerationSession().apply {
+            bindRoutingDecision(RoutingDecision(Route.CLOUD_ONLY, emptyList(), cloudAllowed = true))
+            bindContextProvider {
+                whenever(routingContextProvider.networkState()).thenReturn(NetworkState.METERED)
+                GenerationContext("safe", emptyList())
+            }
+        }
+        val events = repository.streamResponse(
+            HybridAiRepository.Mode.CLOUD, session, "rules", "question", route = Route.CLOUD_ONLY
+        ).toList()
+        assertEquals(listOf("cloud"), events.deltaTexts())
+        assertTrue(events.last() is GenerationEvent.Completed)
+        verify(cloudRepository).streamResponseWithParams(eq("safe"), eq("question"), eq(emptyList()), any())
+    }
+
+    private suspend fun TestScope.assertNetworkChangeBlocksPreparedFallback(network: NetworkState) {
+        whenever(routingContextProvider.networkState()).thenReturn(NetworkState.UNMETERED)
+        whenever(cloudRepository.streamResponseWithParams(any(), any(), any(), any()))
+            .thenReturn(flowOf(delta("unexpected cloud"), completed()))
+        val preparing = CompletableDeferred<Unit>()
+        val resume = CompletableDeferred<Unit>()
+        val session = GenerationSession().apply {
+            bindRoutingDecision(RoutingDecision(Route.LOCAL_THEN_CLOUD, emptyList(), cloudAllowed = true))
+            bindContextProvider { backend ->
+                if (backend == Backend.CLOUD) {
+                    preparing.complete(Unit)
+                    resume.await()
+                }
+                GenerationContext("safe", emptyList())
+            }
+        }
+        val generation = async {
+            repository.streamResponse(HybridAiRepository.Mode.LOCAL, session, "rules", "question").toList()
+        }
+        preparing.await()
+        whenever(routingContextProvider.networkState()).thenReturn(network)
+        resume.complete(Unit)
+        val events = generation.await()
+        verify(cloudRepository, never()).streamResponseWithParams(any(), any(), any(), any())
+        val terminal = events.last() as GenerationEvent.Failed
+        assertEquals(Backend.CLOUD, terminal.backend)
+        assertEquals(GenerationErrorType.NETWORK, terminal.error.type)
+        assertFalse(terminal.fallbackPlanned)
+    }
+
+    @Test
+    fun `cancellation while authorizing cloud context never starts network generation`() = runTest {
+        val session = GenerationSession().apply {
+            bindContextProvider { throw CancellationException("Memory was deleted") }
+        }
+        val result = runCatching {
+            repository.streamResponse(HybridAiRepository.Mode.CLOUD, session, "base", "question").toList()
+        }
+        assertTrue(result.exceptionOrNull() is CancellationException)
+        verify(cloudRepository, never()).streamResponseWithParams(any(), any(), any(), any())
+    }
+
+    @Test
+    fun `a stop during context preparation prevents cloud dispatch`() = runTest {
+        val session = GenerationSession()
+        session.bindContextProvider {
+            session.requestStop(com.example.persona.core.ai.StopReason.USER_REQUESTED)
+            GenerationContext("safe", emptyList())
+        }
+        val events = repository.streamResponse(HybridAiRepository.Mode.CLOUD, session, "base", "question").toList()
+        assertTrue(events.single() is GenerationEvent.Stopped)
+        verify(cloudRepository, never()).streamResponseWithParams(any(), any(), any(), any())
+    }
 
     @Test
     fun `a ready model is not charged its weights twice when memory falls after loading`() = runTest {

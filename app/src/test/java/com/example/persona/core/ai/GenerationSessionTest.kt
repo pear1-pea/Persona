@@ -6,6 +6,23 @@ import org.junit.Test
 
 class GenerationSessionTest {
     @Test
+    fun `context is prepared again for each execution backend`() = kotlinx.coroutines.runBlocking {
+        val session = GenerationSession()
+        var revision = 1
+        session.bindContextProvider { backend -> GenerationContext("$backend/$revision", emptyList()) }
+        assertEquals("MNN/1", session.prepareContext(Backend.MNN, "base", emptyList()).systemPrompt)
+        revision = 2
+        assertEquals("CLOUD/2", session.prepareContext(Backend.CLOUD, "base", emptyList()).systemPrompt)
+    }
+
+    @Test(expected = IllegalStateException::class)
+    fun `a request cannot replace its context owner`() {
+        val session = GenerationSession()
+        session.bindContextProvider { GenerationContext("one", emptyList()) }
+        session.bindContextProvider { GenerationContext("two", emptyList()) }
+    }
+
+    @Test
     fun `a new request is not stopped`() {
         assertNull(GenerationSession().stopReason)
     }

@@ -13,6 +13,9 @@ import com.example.persona.data.local.entity.TraitEntity
 @Dao
 interface MessageDao {
 
+    @Query("SELECT * FROM messages WHERE id = :id AND ownerId = :ownerId")
+    suspend fun getMessageById(id: String, ownerId: String): MessageEntity?
+
     @Query("SELECT * FROM messages WHERE personaId = :personaId AND ownerId = :ownerId ORDER BY timestamp ASC")
     fun getMessagesByPersonaId(personaId: String, ownerId: String): PagingSource<Int, MessageEntity>
 

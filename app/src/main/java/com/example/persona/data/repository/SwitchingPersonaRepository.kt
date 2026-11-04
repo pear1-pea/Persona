@@ -2,9 +2,15 @@ package com.example.persona.data.repository
 
 import android.util.Log
 import com.example.persona.core.auth.AuthManager
+import com.example.persona.core.auth.SessionTokenStore
 import com.example.persona.domain.model.Persona
 import com.example.persona.domain.repository.PersonaRepository
+import com.example.persona.domain.repository.MemoryRepository
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
+import retrofit2.HttpException
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -12,7 +18,9 @@ import javax.inject.Singleton
 class SwitchingPersonaRepository @Inject constructor(
     private val roomImpl: RoomPersonaRepository,
     private val remoteImpl: RemotePersonaRepository,
-    private val authManager: AuthManager
+    private val authManager: AuthManager,
+    private val memoryRepository: MemoryRepository,
+    private val sessionTokenStore: SessionTokenStore
 ) : PersonaRepository {
 
     /*
@@ -30,7 +38,15 @@ class SwitchingPersonaRepository @Inject constructor(
     )
 
     override suspend fun getMyPersonas(): List<Persona> = authManager.withIdentity {
-        if (isCloudPreferred()) remoteImpl.getMyPersonas() else roomImpl.getMyPersonas()
+        if (isCloudPreferred()) {
+            val personas = remoteImpl.getMyPersonas()
+            val ownerId = authManager.requestIdentity().ownerId
+            val remainingIds = personas.map { it.id }.toSet()
+            for (id in sessionTokenStore.pendingPersonaDeletions(ownerId)) {
+                if (id !in remainingIds) completePersonaCleanup(ownerId, id)
+            }
+            personas
+        } else roomImpl.getMyPersonas()
     }
 
     override suspend fun addPersona(name: String, traits: List<String>, backstory: String, isPublic: Boolean) = authManager.withIdentity {
@@ -70,10 +86,32 @@ class SwitchingPersonaRepository @Inject constructor(
 
     override suspend fun deletePersona(id: String) = authManager.withIdentity {
         if (isCloudPreferred()) {
-            remoteImpl.deletePersona(id)
+            val ownerId = authManager.requestIdentity().ownerId
+            if (id !in sessionTokenStore.pendingPersonaDeletions(ownerId)) {
+                check(remoteImpl.getPersonaById(id)?.creatorId == ownerId) {
+                    "Persona is unavailable or is owned by another account"
+                }
+            }
+            withContext(NonCancellable + Dispatchers.IO) {
+                authManager.requestIdentity()
+                sessionTokenStore.markPersonaDeletionPending(ownerId, id)
+            }
+            try {
+                remoteImpl.deletePersona(id)
+            } catch (error: HttpException) {
+                if (error.code() != 404) throw error
+            }
+            completePersonaCleanup(ownerId, id)
         } else {
             roomImpl.deletePersona(id)
+            memoryRepository.deleteForPersona(id)
         }
+    }
+
+    private suspend fun completePersonaCleanup(ownerId: String, id: String) = withContext(NonCancellable + Dispatchers.IO) {
+        authManager.requestIdentity()
+        memoryRepository.deleteForPersona(id)
+        sessionTokenStore.completePersonaDeletion(ownerId, id)
     }
 
     private suspend fun readWithFallback(
@@ -81,7 +119,7 @@ class SwitchingPersonaRepository @Inject constructor(
         remote: suspend () -> List<Persona>,
         room: suspend () -> List<Persona>
     ): List<Persona> = authManager.withIdentity {
-        if (!isCloudPreferred()) return@withIdentity room()
+        if (!isCloudPreferred()) return@withIdentity roomImpl.getPersonas().filter { it.isPublic }
         try {
             remote()
         } catch (error: CancellationException) {

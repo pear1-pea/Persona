@@ -16,6 +16,9 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Persona">
         <activity
+            android:name=".features.memory.MemoryActivity"
+            android:exported="false" />
+        <activity
             android:name=".features.model.ModelManagementActivity"
             android:exported="false" />
         <activity

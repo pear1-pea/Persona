@@ -96,6 +96,14 @@
         </LinearLayout>
     </androidx.appcompat.widget.Toolbar>
 
+    <Button
+        android:id="@+id/btnMemories"
+        android:layout_width="wrap_content"
+        android:layout_height="48dp"
+        android:text="@string/chat_memories"
+        app:layout_constraintTop_toBottomOf="@id/toolbarChat"
+        app:layout_constraintEnd_toEndOf="parent" />
+
     <!-- Message list -->
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/rvChatMessages"
@@ -103,7 +111,7 @@
         android:layout_height="0dp"
         android:paddingBottom="8dp"
         app:layout_constraintBottom_toTopOf="@id/inputLayout"
-        app:layout_constraintTop_toBottomOf="@id/toolbarChat" />
+        app:layout_constraintTop_toBottomOf="@id/btnMemories" />
 
     <!-- Bottom input bar -->
     <LinearLayout

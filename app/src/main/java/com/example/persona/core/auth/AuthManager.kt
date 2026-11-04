@@ -2,6 +2,7 @@ package com.example.persona.core.auth
 
 import com.example.persona.data.local.dao.PersonaDao
 import com.example.persona.data.remote.AuthApi
+import com.example.persona.data.remote.requireSuccessfulNoContent
 import com.example.persona.data.remote.dto.AuthCredentials
 import com.example.persona.data.remote.dto.AuthSessionDto
 import com.example.persona.data.remote.dto.AuthSessionInfoDto
@@ -143,7 +144,7 @@ class AuthManager @Inject constructor(
             token
         }
         if (!token.isNullOrBlank()) {
-            authScope.launch { runCatching { authApi.logout("Bearer $token") } }
+            authScope.launch { runCatching { authApi.logout("Bearer $token").requireSuccessfulNoContent() } }
         }
     }
 
@@ -163,7 +164,7 @@ class AuthManager @Inject constructor(
         // Once the server accepts deletion, UI cancellation must not interrupt
         // durable cleanup scheduling, session invalidation, or the Room transaction.
         withContext(NonCancellable + Dispatchers.IO) {
-            authApi.deleteAccount("Bearer $token", DeleteAccountRequest(currentPassword))
+            authApi.deleteAccount("Bearer $token", DeleteAccountRequest(currentPassword)).requireSuccessfulNoContent()
             synchronized(stateLock) { deletedOwners.add(expected.ownerId) }
             var schedulingError: Throwable? = null
             try {
@@ -198,7 +199,7 @@ class AuthManager @Inject constructor(
     }
 
     suspend fun revokeOtherSessions() = withIdentity {
-        authApi.revokeOtherSessions("Bearer ${requestIdentity().token ?: error("请重新登录")}")
+        authApi.revokeOtherSessions("Bearer ${requestIdentity().token ?: error("请重新登录")}").requireSuccessfulNoContent()
     }
 
     suspend fun refreshCurrentUser() = validateSession()

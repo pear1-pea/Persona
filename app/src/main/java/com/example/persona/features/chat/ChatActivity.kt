@@ -1,6 +1,7 @@
 package com.example.persona.features.chat
 
 import android.annotation.SuppressLint
+import android.content.Intent
 import android.os.Bundle
 import android.view.View
 import android.view.inputmethod.EditorInfo
@@ -22,6 +23,8 @@ import com.example.persona.core.ai.EngineState
 import com.example.persona.core.util.MarkdownHelper
 import com.example.persona.core.util.observeErrorEvents
 import com.example.persona.databinding.ActivityChatBinding
+import com.example.persona.domain.model.Message
+import com.example.persona.features.memory.MemoryActivity
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -36,7 +39,7 @@ class ChatActivity : AppCompatActivity() {
     @Inject
     lateinit var markdownHelper: MarkdownHelper
 
-    private val adapter: ChatAdapter by lazy { ChatAdapter(markdownHelper) }
+    private val adapter: ChatAdapter by lazy { ChatAdapter(markdownHelper, ::openMemories) }
     private lateinit var messagesLayoutManager: LinearLayoutManager
     private var shouldFollowLatestMessage = true
     private var didPositionInitialMessages = false
@@ -54,8 +57,8 @@ class ChatActivity : AppCompatActivity() {
 
         binding.tvChatTitle.text = personaName
 
-        shouldFollowLatestMessage = true
-        didPositionInitialMessages = false
+        shouldFollowLatestMessage = savedInstanceState?.getBoolean("chat_follow_latest", true) ?: true
+        didPositionInitialMessages = savedInstanceState?.getBoolean("chat_positioned", false) ?: false
         viewModel.loadPersonaInfo(personaId)
 
         messagesLayoutManager = LinearLayoutManager(this).apply {
@@ -89,6 +92,10 @@ class ChatActivity : AppCompatActivity() {
                     viewModel.messagesFlow.collectLatest { pagingData ->
                         adapter.submitData(pagingData)
                     }
+                }
+
+                launch {
+                    viewModel.streamingMessage.collect { adapter.updateStreamingMessage(it) }
                 }
 
                 launch {
@@ -164,6 +171,8 @@ class ChatActivity : AppCompatActivity() {
             confirmClearConversation()
         }
 
+        binding.btnMemories.setOnClickListener { openMemories() }
+
         binding.etMessage.setOnEditorActionListener { v, actionId, _ ->
             if (actionId == EditorInfo.IME_ACTION_DONE) {
                 hideKeyboard(v)
@@ -178,6 +187,17 @@ class ChatActivity : AppCompatActivity() {
         val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
         imm.hideSoftInputFromWindow(view.windowToken, 0)
         view.clearFocus()
+    }
+
+    private fun openMemories(message: Message? = null) {
+        val persona = viewModel.currentPersonaForMemory() ?: return
+        startActivity(Intent(this, MemoryActivity::class.java).apply {
+            putExtra("PERSONA_ID", persona.id)
+            putExtra("PERSONA_NAME", persona.name)
+            message?.let {
+                putExtra("SOURCE_MESSAGE_ID", it.id)
+            }
+        })
     }
 
     private fun isAtLatestMessage(): Boolean {
@@ -208,8 +228,9 @@ class ChatActivity : AppCompatActivity() {
             .show()
     }
 
-    override fun onDestroy() {
-        viewModel.stopGenerating()
-        super.onDestroy()
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putBoolean("chat_follow_latest", shouldFollowLatestMessage)
+        outState.putBoolean("chat_positioned", didPositionInitialMessages)
+        super.onSaveInstanceState(outState)
     }
 }

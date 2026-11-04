@@ -1,6 +1,7 @@
 package com.example.persona.data.local.entity
 
 import androidx.room.Entity
+import androidx.room.ColumnInfo
 import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
@@ -25,5 +26,7 @@ data class MessageEntity(
     val content: String,
     val isFromUser: Boolean, 
     val timestamp: Long,
-    val status: String = "NORMAL"
+    val status: String = "NORMAL",
+    @ColumnInfo(defaultValue = "0") val localOnly: Boolean = false,
+    @ColumnInfo(defaultValue = "0") val excludeFromHistory: Boolean = false
 )

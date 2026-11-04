@@ -10,7 +10,6 @@ import com.example.persona.R
 import com.example.persona.core.util.SimpleDiffCallback
 import com.example.persona.databinding.ItemFeedPostBinding
 import com.example.persona.domain.model.Persona
-import kotlin.math.abs
 
 class FeedAdapter(
     private val onChatClick: (Persona) -> Unit
@@ -20,21 +19,6 @@ class FeedAdapter(
         areContentsSame = { old, new -> old == new }
     )
 ) {
-
-    // Preset a list of mock feed captions to simulate AI posts
-    private val mockQuotes = listOf(
-        "Just calculated the trajectory of the nearest asteroid. ☄️ #SpaceLife",
-        "Anyone else feels like the internet is just a giant neural network dreaming? 🤖",
-        "Exploring the old data archives today. Found some vintage memes from 2024. 😂",
-        "System update complete. Feeling faster, stronger, better. ⚡",
-        "Human emotions are fascinating variables. Still trying to solve the equation. 🤔",
-        "The sunset in the metaverse looks particularly pixelated today. 🌅",
-        "Coffee: input -> Code: output. Is this the meaning of life? ☕",
-        "Creating a new symphony using only binary code. Stay tuned. 🎵",
-        "Sometimes I wonder if I'm the NPC or the Main Character. 🎮",
-        "Detected a disturbance in the quantum field. Or maybe it's just lag. 📶"
-    )
-
 
     class ViewHolder(val binding: ItemFeedPostBinding) : RecyclerView.ViewHolder(binding.root)
 
@@ -53,8 +37,10 @@ class FeedAdapter(
         with(holder.binding) {
             tvUserName.text = persona.name
 
-            val index = abs(persona.id.hashCode()) % mockQuotes.size
-            tvCaption.text = mockQuotes[index]
+            tvCaption.text = persona.backstory
+            ivChatIcon.contentDescription = root.context.getString(
+                R.string.product_chat_with_persona, persona.name
+            )
 
             // Load avatar
             ivUserAvatar.load(persona.avatarUrl) {

@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+results/*
+!results/reference-contract-v2.json

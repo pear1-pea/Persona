@@ -55,4 +55,29 @@ class SessionCleanupInstrumentedTest {
             .exceptionOrNull() is IllegalArgumentException)
         assertEquals(emptySet<String>(), store.pendingDeletedOwners())
     }
+
+    @Test
+    fun personaDeletionIntentSurvivesLogoutAndStoreRecreationWithOwnerIsolation() {
+        val store = SessionTokenStore(context)
+        store.markPersonaDeletionPending("a", "persona")
+        store.markPersonaDeletionPending("b", "persona")
+        store.clear()
+        val restored = SessionTokenStore(context)
+        assertEquals(setOf("persona"), restored.pendingPersonaDeletions("a"))
+        assertEquals(setOf("persona"), restored.pendingPersonaDeletions("b"))
+        restored.completePersonaDeletion("a", "persona")
+        assertEquals(emptySet<String>(), SessionTokenStore(context).pendingPersonaDeletions("a"))
+        assertEquals(setOf("persona"), restored.pendingPersonaDeletions("b"))
+    }
+
+    @Test
+    fun accountCleanupRemovesOnlyItsOwnPendingPersonaIds() {
+        val store = SessionTokenStore(context)
+        store.markPersonaDeletionPending("a", "persona")
+        store.markPersonaDeletionPending("b", "persona")
+        store.markAccountDeleted("a")
+        store.completeAccountDeletion("a")
+        assertEquals(emptySet<String>(), store.pendingPersonaDeletions("a"))
+        assertEquals(setOf("persona"), store.pendingPersonaDeletions("b"))
+    }
 }
