@@ -24,7 +24,6 @@ abstract class MemoryDao {
           AND deleted = 0 AND (expiresAt IS NULL OR expiresAt > :now)
           AND (:cloud = 0 OR cloudAllowed = 1)
         ORDER BY updatedAt DESC, id ASC
-        LIMIT 4
     """)
     abstract suspend fun selectForPrompt(
         ownerId: String, personaId: String, cloud: Boolean, now: Long

@@ -32,7 +32,7 @@ class MemoryMigrationInstrumentedTest {
             }
             // No callback: the migration itself must install the integrity trigger.
             val db = Room.databaseBuilder(context, AppDatabase::class.java, name)
-                .addMigrations(MIGRATION_7_8).build()
+                .addMigrations(MIGRATION_7_8, MIGRATION_8_9).build()
             try {
                 val sql = db.openHelper.writableDatabase
                 val message = db.messageDao().getRecentMessagesByPersonaId("p", "owner", 1).single()

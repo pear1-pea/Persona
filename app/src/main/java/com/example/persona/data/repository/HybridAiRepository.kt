@@ -1,6 +1,7 @@
 package com.example.persona.data.repository
 
 import android.util.Log
+import com.example.persona.core.memory.InferencePriorityGate
 import com.example.persona.core.ai.ChatMessage
 import com.example.persona.core.ai.Backend
 import com.example.persona.core.ai.EngineState
@@ -72,12 +73,16 @@ class HybridAiRepository internal constructor(
 
     enum class Mode { CLOUD, LOCAL }
 
+    internal val localModelIdentity: String?
+        get() = localModelManager.currentModel.value?.let { "${it.id}@${it.version}" }
+
     val localEngineState = localAiEngine.state
     private val _activeMode = MutableStateFlow(Mode.CLOUD)
     val activeMode = _activeMode.asStateFlow()
     private val _lastRoutingDecision = MutableStateFlow<RoutingDecision?>(null)
     val lastRoutingDecision = _lastRoutingDecision.asStateFlow()
 
+    private val priority = InferencePriorityGate(::stopGeneration)
     private val routeLock = Any()
     private val modelOperationMutex = Mutex()
 
@@ -275,7 +280,51 @@ class HybridAiRepository internal constructor(
             ))
             return@flow
         }
-        emitAll(streamAuthorizedResponse(mode, session, systemPrompt, userMessage, history, route, params))
+        if (!priority.begin(session, false, currentCoroutineContext()[kotlinx.coroutines.Job])) {
+            emit(GenerationEvent.Stopped(StopReason.SESSION_REPLACED, ""))
+            return@flow
+        }
+        try {
+            priority.awaitBackgroundCleanup()
+            emitAll(streamAuthorizedResponse(mode, session, systemPrompt, userMessage, history, route, params))
+        } finally {
+            priority.end(session)
+        }
+    }
+
+    internal fun streamMemoryExtraction(
+        session: GenerationSession,
+        cloud: Boolean,
+        systemPrompt: String,
+        userMessage: String,
+        params: GenerationParams
+    ): Flow<GenerationEvent> = flow {
+        session.stopReason?.let {
+            emit(GenerationEvent.Stopped(it, ""))
+            return@flow
+        }
+        // Admission precedes model initialization and smoke tests as well as generation.
+        if (!priority.begin(session, true, currentCoroutineContext()[kotlinx.coroutines.Job])) {
+            emit(GenerationEvent.Stopped(StopReason.SESSION_REPLACED, ""))
+            return@flow
+        }
+        try {
+            currentCoroutineContext().ensureActive()
+            val decision = selectRouteForGeneration(
+                forceCloud = cloud, localOnly = !cloud,
+                privacyLevel = if (cloud) PrivacyLevel.PUBLIC else PrivacyLevel.PRIVATE,
+                taskComplexity = TaskComplexity.SIMPLE
+            )
+            check(decision.isExecutable) { "No permitted extraction executor is ready" }
+            currentCoroutineContext().ensureActive()
+            session.bindRoutingDecision(decision)
+            emitAll(streamAuthorizedResponse(
+                if (cloud) Mode.CLOUD else Mode.LOCAL, session,
+                systemPrompt, userMessage, emptyList(), decision.route, params
+            ))
+        } finally {
+            priority.end(session)
+        }
     }
 
     private fun streamCloudWithContext(

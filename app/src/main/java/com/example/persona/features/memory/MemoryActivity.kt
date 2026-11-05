@@ -1,5 +1,6 @@
 package com.example.persona.features.memory
 
+import android.content.Intent
 import android.os.Bundle
 import android.widget.TextView
 import androidx.activity.viewModels
@@ -46,6 +47,13 @@ class MemoryActivity : AppCompatActivity() {
                 R.string.memory_instructions_close else R.string.memory_instructions)
         }
         binding.btnAdd.setOnClickListener { viewModel.newMemory() }
+        binding.btnCuration.setOnClickListener {
+            startActivity(Intent(this, MemoryCurationActivity::class.java).apply {
+                putExtra(EXTRA_PERSONA_ID, intent.getStringExtra(EXTRA_PERSONA_ID))
+                putExtra(EXTRA_PERSONA_NAME, intent.getStringExtra(EXTRA_PERSONA_NAME))
+                putExtra(EXTRA_SOURCE_MESSAGE_ID, intent.getStringExtra(EXTRA_SOURCE_MESSAGE_ID))
+            })
+        }
         binding.btnSave.setOnClickListener { viewModel.save() }
         binding.btnCancel.setOnClickListener { viewModel.cancelDraft() }
         binding.btnRetry.setOnClickListener { viewModel.retryLoading() }
@@ -57,6 +65,16 @@ class MemoryActivity : AppCompatActivity() {
         binding.checkShared.setOnCheckedChangeListener { _, _ -> captureDraft() }
         binding.checkCloud.setOnCheckedChangeListener { _, _ -> captureDraft() }
         binding.typeGroup.setOnCheckedChangeListener { _, _ -> captureDraft() }
+        binding.etExpiry.doAfterTextChanged { captureDraft(expiryEdited = true) }
+        binding.checkPermanent.setOnCheckedChangeListener { _, checked ->
+            if (!rendering) {
+                rendering = true
+                binding.etExpiry.setText(if (checked) "" else
+                    formatMemoryExpiry(System.currentTimeMillis() + 86_400_000))
+                rendering = false
+                captureDraft(expiryEdited = true)
+            }
+        }
         render(viewModel.uiState.value)
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -65,7 +83,7 @@ class MemoryActivity : AppCompatActivity() {
         }
     }
 
-    private fun captureDraft() {
+    private fun captureDraft(expiryEdited: Boolean = false) {
         if (rendering) return
         val draft = viewModel.uiState.value.draft ?: return
         val type = when (binding.typeGroup.checkedRadioButtonId) {
@@ -75,7 +93,10 @@ class MemoryActivity : AppCompatActivity() {
             else -> MemoryType.PREFERENCE
         }
         viewModel.updateDraft(draft.copy(content = binding.etContent.text.toString(), type = type,
-            shared = binding.checkShared.isChecked, cloudAllowed = binding.checkCloud.isChecked))
+            shared = binding.checkShared.isChecked, cloudAllowed = binding.checkCloud.isChecked,
+            expiryInput = if (expiryEdited) {
+                if (binding.checkPermanent.isChecked) "" else binding.etExpiry.text.toString()
+            } else draft.expiryInput))
     }
 
     private fun render(state: MemoryUiState) {
@@ -92,6 +113,7 @@ class MemoryActivity : AppCompatActivity() {
                 null -> R.string.memory_loading
             })
             binding.btnAdd.isEnabled = available && state.draft == null && state.pendingDelete == null
+            binding.btnCuration.isEnabled = available
             binding.editor.isVisible = state.draft != null
             val draft = state.draft
             val content = draft?.content.orEmpty()
@@ -106,6 +128,14 @@ class MemoryActivity : AppCompatActivity() {
             })
             binding.checkShared.isChecked = draft?.shared == true
             binding.checkCloud.isChecked = draft?.cloudAllowed == true
+            val expiryInput = draft?.expiryInput ?: formatMemoryExpiry(draft?.expiresAt)
+            binding.checkPermanent.isChecked = expiryInput.isEmpty()
+            if (binding.etExpiry.text.toString() != expiryInput) binding.etExpiry.setText(expiryInput)
+            binding.etExpiry.isEnabled = available && !binding.checkPermanent.isChecked
+            binding.checkPermanent.isEnabled = available
+            binding.etExpiry.error = if (draft != null && !runCatching {
+                parseMemoryExpiry(expiryInput)?.let { it > System.currentTimeMillis() } ?: true
+            }.getOrDefault(false)) getString(R.string.curation_error_expiry) else null
             binding.tvCount.text = getString(R.string.memory_content_count, content.length)
             binding.contentInput.error = if (draft != null && !draft.valid)
                 getString(R.string.memory_content_invalid) else null

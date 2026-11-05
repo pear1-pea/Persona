@@ -1,5 +1,8 @@
 package com.example.persona.features
 
+import android.content.Intent
+import android.view.WindowManager
+import com.example.persona.features.creation.CreatePersonaActivity
 import android.os.Bundle
 import android.os.SystemClock
 import androidx.lifecycle.ViewModelStore
@@ -110,6 +113,9 @@ class P2MemoryRuntimeInstrumentedTest {
         var installed: InstalledModel? = null
         var data: Data? = null
         var activeStore: ViewModelStore? = null
+        val foregroundHost = instrumentation.startActivitySync(Intent(context, CreatePersonaActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        instrumentation.runOnMainSync { foregroundHost.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
         try {
             check(manager.refreshInstalledModels().isEmpty()) { "Requires an empty isolated model catalog" }
             check(manager.deviceCapability().thermalStatus !in setOf(ThermalStatus.SEVERE,
@@ -219,6 +225,10 @@ class P2MemoryRuntimeInstrumentedTest {
             report["failureClass"] = error.javaClass.simpleName
             throw error
         } finally {
+            instrumentation.runOnMainSync {
+                foregroundHost.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                foregroundHost.finish()
+            }
             activeStore?.let { store -> instrumentation.runOnMainSync { store.clear() } }
             data?.database?.close()
             hybrid.clearLocalModel()

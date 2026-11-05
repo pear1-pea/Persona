@@ -113,8 +113,13 @@ class MemoryViewModel @Inject constructor(
         if (!available()) return
         val current = _uiState.value.draft ?: return
         // Identity, provenance and CAS metadata cannot be changed by form input.
+        // Only explicit date input changes expiry; legacy callers preserve the stored timestamp.
+        val expiresAt = if (draft.expiryInput != current.expiryInput && draft.expiryInput != null) {
+            runCatching { parseMemoryExpiry(draft.expiryInput) }.getOrDefault(current.expiresAt)
+        } else current.expiresAt
         retainDraft(current.copy(type = draft.type, content = draft.content,
-            shared = draft.shared, cloudAllowed = draft.cloudAllowed))
+            shared = draft.shared, cloudAllowed = draft.cloudAllowed,
+            expiryInput = draft.expiryInput, expiresAt = expiresAt))
     }
 
     fun cancelDraft() {
@@ -299,7 +304,7 @@ class MemoryViewModel @Inject constructor(
             "id" to draft?.id, "revision" to draft?.revision, "type" to draft?.type?.name,
             "content" to draft?.content, "shared" to draft?.shared,
             "cloud" to draft?.cloudAllowed, "source" to draft?.sourceMessageId,
-            "expires" to draft?.expiresAt
+            "expires" to draft?.expiresAt, "expiry_input" to draft?.expiryInput
         )
         values.forEach { (key, value) ->
             if (value == null) savedStateHandle.remove<Any>(PREFIX + key)
@@ -320,7 +325,8 @@ class MemoryViewModel @Inject constructor(
             shared = savedStateHandle[PREFIX + "shared"] ?: false,
             cloudAllowed = savedStateHandle[PREFIX + "cloud"] ?: false,
             sourceMessageId = savedStateHandle[PREFIX + "source"],
-            expiresAt = savedStateHandle[PREFIX + "expires"]
+            expiresAt = savedStateHandle[PREFIX + "expires"],
+            expiryInput = savedStateHandle[PREFIX + "expiry_input"]
         )
     }
 

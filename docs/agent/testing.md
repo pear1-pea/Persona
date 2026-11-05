@@ -64,7 +64,7 @@ smoke. Without `TEST_DATABASE_URL` the database tests skip, which is not accepta
 
 `.github/workflows/ci.yml` runs:
 
-- Android `assembleDebug` + `testDebugUnitTest`.
+- Android `assembleDebug` + `assembleDebugAndroidTest` + `testDebugUnitTest`.
 - Backend `npm run typecheck` + `npm test`.
 - Backend Postgres service + `npm run test:integration` + `npm run smoke`.
 - Model packager `python -m unittest discover`.
@@ -145,3 +145,39 @@ Do not replace these with only mocked AuthApi success; that misses Retrofit's bo
 - When changing app behavior, add or update a unit test in the matching package.
 - When changing auth, ownership, or chat proxying, also run the backend smoke test.
 - Do not land changes that fail `./gradlew testDebugUnitTest`.
+
+## P3 memory acceptance
+
+P3 adds default-off candidate curation, strict model extraction, keyword retrieval
+and extractive summaries. Run Room migrations and actual repository boundaries on
+an isolated validation install before UI or native acceptance.
+
+- `data.local.MemoryCurationInstrumentedTest`, `MemoryCurationFlowInstrumentedTest`,
+  `MemoryExtractionBoundaryInstrumentedTest`, `MemoryMigrationInstrumentedTest`
+  and `MemoryDaoInstrumentedTest` cover storage, authorization and invalidation.
+- `features.P3UiAcceptanceInstrumentedTest` requires `runP3Ui=true`. It exercises
+  real Espresso input, source dialogs, expiry, Activity recreation, conflicts and
+  explicit confirmation. The shared fixture keeps taps clear of system gestures.
+- `features.P3CurationRecoveryInstrumentedTest` uses `p3RecoveryPhase=prepare` and
+  `verify`, with `runP3Ui=true`. After READY, force-stop only the validation package
+  and pass its old PID as `p3ForceStoppedPid`. Its RUNNING fixture is synthetic.
+- `features.P3ModelRuntimeInstrumentedTest` requires `runP3Model=true`, a fresh
+  `p3RunId`, pinned private model sources and the fixed synthetic extraction corpus.
+  Parser success and semantic correctness are reported separately.
+- `features.P3NativeRecoveryInstrumentedTest` requires `runP3Native=true`, a fresh
+  `p3NativeRunId`, `p3NativePhase=prepare|verify` and the pinned secondary model.
+  Prepare tests real MNN preemption, then emits READY during another live extraction.
+  Force-stop validation within 45 seconds and verify with `p3ForceStoppedPid`.
+  Recovery must clear RUNNING tasks without model calls or automatic memory writes.
+- `features.P3RetrievalPerformanceInstrumentedTest` requires `runP3Perf=true`.
+  Its independent 1,001-row fixture declares p95 <=250ms and retained Java heap
+  growth <=16MiB before 5 warmups and 30 measurements. It measures actual Room
+  retrieval, including ranking and revalidation, on the tested device only.
+
+All device classes are validation-only. Export synthetic private observations and
+UI screenshots before uninstalling the validation and test packages. Record source
+and APK hashes for each run. Preserve failed runs when rerunning fixes. Native
+quality defects do not become passing results because engineering boundaries pass.
+Local model extraction remains a Debug experiment and every candidate needs user
+confirmation. The release workflow offers rules, manual selection and separately
+authorized cloud extraction. Embedding remains conditional on measured need.

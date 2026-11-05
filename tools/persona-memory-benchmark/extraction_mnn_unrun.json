@@ -1,0 +1,11 @@
+{
+  "schema": "persona-memory-mnn-observations-v1",
+  "status": "unrun",
+  "synthetic": true,
+  "dataset": "extraction_samples.jsonl",
+  "extraction_version": "memory-extraction-v1",
+  "model_package_sha256": null,
+  "device": null,
+  "configuration": null,
+  "observations": []
+}

@@ -116,6 +116,56 @@ class HybridAiRepositoryTest {
     private fun runTest(block: suspend TestScope.() -> Unit) = observerScope.runTest(testBody = block)
 
     @Test
+    fun `extraction cannot prepare a route or initialize runtime during foreground chat`() = runTest {
+        val started = CompletableDeferred<Unit>()
+        whenever(cloudRepository.streamResponseWithParams(any(), any(), any(), any())).thenReturn(flow {
+            started.complete(Unit)
+            awaitCancellation()
+        })
+        val chat = launch {
+            repository.streamResponse(HybridAiRepository.Mode.CLOUD, GenerationSession(), "system", "chat").toList()
+        }
+        started.await()
+        org.mockito.kotlin.clearInvocations(localModelManager, localEngine)
+        val events = repository.streamMemoryExtraction(GenerationSession(), false, "system", "extract",
+            GenerationParams()).toList()
+        assertTrue(events.single() is GenerationEvent.Stopped)
+        verify(localModelManager, never()).deviceCapability()
+        verify(localEngine, never()).initialize(any())
+        verify(localEngine, never()).release()
+        chat.cancel()
+    }
+
+    @Test
+    fun `foreground chat cancels extraction and waits for transport cleanup`() = runTest {
+        val started = CompletableDeferred<Unit>()
+        var cleaned = false
+        whenever(cloudRepository.streamResponseWithParams(any(), any(), any(), any())).thenAnswer { call ->
+            val input = call.getArgument<String>(1)
+            flow {
+                if (input == "extract") {
+                    started.complete(Unit)
+                    try { awaitCancellation() }
+                    finally { withContext(kotlinx.coroutines.NonCancellable) { delay(10); cleaned = true } }
+                } else {
+                    assertTrue(cleaned)
+                    emit(delta("chat reply"))
+                }
+            }
+        }
+        val extraction = launch {
+            repository.streamMemoryExtraction(GenerationSession(), true, "system", "extract",
+                GenerationParams()).toList()
+        }
+        started.await()
+        val events = repository.streamResponse(HybridAiRepository.Mode.CLOUD, GenerationSession(),
+            "system", "chat").toList()
+        assertTrue(extraction.isCancelled)
+        assertTrue(cleaned)
+        assertEquals(listOf(delta("chat reply")), events)
+    }
+
+    @Test
     fun `fallback rebuilds context and never reuses local memory or partial output`() = runTest {
         assertTrue(repository.initializeLocalModel())
         whenever(localEngine.streamResponse(any(), any(), any(), any())).thenReturn(flow {

@@ -22,5 +22,5 @@ interface MemoryRepository {
 
     suspend fun delete(id: String, expectedRevision: Int)
     suspend fun deleteForPersona(personaId: String)
-    suspend fun selectForPrompt(personaId: String, cloud: Boolean): List<Memory>
+    suspend fun selectForPrompt(personaId: String, cloud: Boolean, query: String = ""): List<Memory>
 }

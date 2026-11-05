@@ -17,6 +17,7 @@ import com.example.persona.domain.model.Message
 import com.example.persona.domain.model.MessageStatus
 import com.example.persona.domain.model.Persona
 import com.example.persona.domain.repository.MemoryRepository
+import com.example.persona.domain.repository.MemoryCurationRepository
 import com.example.persona.domain.repository.ChatRepository
 import com.example.persona.domain.repository.PersonaRepository
 import kotlinx.coroutines.CancellationException
@@ -39,6 +40,7 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.mockito.kotlin.any
+import org.mockito.kotlin.eq
 import org.mockito.kotlin.anyOrNull
 import org.mockito.kotlin.doAnswer
 import org.mockito.kotlin.doSuspendableAnswer
@@ -432,7 +434,7 @@ class ChatViewModelTest {
         recentMessages: List<Message> = emptyList(),
         route: Route = Route.CLOUD
     ) {
-        whenever(memoryRepository.selectForPrompt(any(), any())).thenReturn(emptyList())
+        whenever(memoryRepository.selectForPrompt(any(), any(), any())).thenReturn(emptyList())
         whenever(memoryRepository.observe(any())).thenReturn(flowOf(emptyList()))
         whenever(hybridRepository.initializeLocalModel()).thenReturn(false)
         whenever(
@@ -481,8 +483,8 @@ class ChatViewModelTest {
             type = com.example.persona.domain.model.MemoryType.FACT, content = "local secret",
             createdAt = 1L, updatedAt = 1L
         )
-        whenever(memoryRepository.selectForPrompt(persona.id, false)).thenReturn(listOf(memory))
-        whenever(memoryRepository.selectForPrompt(persona.id, true)).thenReturn(emptyList())
+        whenever(memoryRepository.selectForPrompt(eq(persona.id), eq(false), any())).thenReturn(listOf(memory))
+        whenever(memoryRepository.selectForPrompt(eq(persona.id), eq(true), any())).thenReturn(emptyList())
         val viewModel = createViewModel()
         viewModel.loadPersonaInfo(persona.id)
         mainDispatcher.scheduler.advanceUntilIdle()
@@ -530,14 +532,14 @@ class ChatViewModelTest {
             com.example.persona.domain.model.MemoryType.FACT, "fact", createdAt = 1L, updatedAt = 1L)
         val rows = MutableStateFlow(listOf(memory))
         whenever(memoryRepository.observe(persona.id)).thenReturn(rows)
-        whenever(memoryRepository.selectForPrompt(persona.id, false)).thenReturn(listOf(memory))
+        whenever(memoryRepository.selectForPrompt(eq(persona.id), eq(false), any())).thenReturn(listOf(memory))
         val viewModel = createViewModel()
         viewModel.loadPersonaInfo(persona.id)
         mainDispatcher.scheduler.advanceUntilIdle()
         viewModel.sendMessage("hello")
         mainDispatcher.scheduler.runCurrent()
         assertTrue(viewModel.isGenerating.value)
-        whenever(memoryRepository.selectForPrompt(persona.id, false)).thenReturn(emptyList())
+        whenever(memoryRepository.selectForPrompt(eq(persona.id), eq(false), any())).thenReturn(emptyList())
         rows.value = emptyList()
         mainDispatcher.scheduler.runCurrent()
         assertFalse(viewModel.isGenerating.value)
@@ -553,7 +555,7 @@ class ChatViewModelTest {
         val rows = MutableStateFlow(listOf(original))
         var selected = listOf(original)
         whenever(memoryRepository.observe(persona.id)).thenReturn(rows)
-        whenever(memoryRepository.selectForPrompt(persona.id, false)).thenAnswer { selected }
+        whenever(memoryRepository.selectForPrompt(eq(persona.id), eq(false), any())).thenAnswer { selected }
         val viewModel = createViewModel()
         viewModel.loadPersonaInfo(persona.id)
         mainDispatcher.scheduler.advanceUntilIdle()
@@ -603,8 +605,8 @@ class ChatViewModelTest {
         val rows = MutableStateFlow(privateNotes + shared)
         var cloudRows = listOf(shared)
         whenever(memoryRepository.observe(persona.id)).thenReturn(rows)
-        whenever(memoryRepository.selectForPrompt(persona.id, false)).thenReturn(privateNotes)
-        whenever(memoryRepository.selectForPrompt(persona.id, true)).thenAnswer { cloudRows }
+        whenever(memoryRepository.selectForPrompt(eq(persona.id), eq(false), any())).thenReturn(privateNotes)
+        whenever(memoryRepository.selectForPrompt(eq(persona.id), eq(true), any())).thenAnswer { cloudRows }
         val viewModel = createViewModel()
         viewModel.loadPersonaInfo(persona.id)
         mainDispatcher.scheduler.advanceUntilIdle()
@@ -627,7 +629,7 @@ class ChatViewModelTest {
         val shared = com.example.persona.domain.model.Memory("cloud-note", "OFFLINE_USER", persona.id,
             com.example.persona.domain.model.MemoryType.FACT, "cloud fact", "source", 1L, 2L, cloudAllowed = true)
         var calls = 0
-        whenever(memoryRepository.selectForPrompt(persona.id, true)).thenAnswer {
+        whenever(memoryRepository.selectForPrompt(eq(persona.id), eq(true), any())).thenAnswer {
             calls++
             if (calls == 1) listOf(shared) else emptyList<com.example.persona.domain.model.Memory>()
         }
@@ -644,8 +646,107 @@ class ChatViewModelTest {
         mainDispatcher.scheduler.runCurrent()
     }
 
-    private fun createViewModel(): ChatViewModel {
-        return ChatViewModel(hybridRepository, personaRepository, chatRepository, authManager, memoryRepository)
+    @Test
+    fun `local and cloud recall use the actual question without mode prefix`() = runTest {
+        configureBaseMocks(flowOf(delta("reply"), completed()))
+        val viewModel = createViewModel()
+        viewModel.loadPersonaInfo(persona.id)
+        mainDispatcher.scheduler.advanceUntilIdle()
+        viewModel.sendMessage("@cloud 我能吃花生吗")
+        mainDispatcher.scheduler.advanceUntilIdle()
+        val session = argumentCaptor<GenerationSession>()
+        verify(hybridRepository).streamResponse(any(), session.capture(), any(), any(), any(), any(), any())
+        session.firstValue.prepareContext(Backend.MNN, "unused", emptyList())
+        session.firstValue.prepareContext(Backend.CLOUD, "unused", emptyList())
+        verify(memoryRepository, times(3)).selectForPrompt(persona.id, false, "我能吃花生吗")
+        verify(memoryRepository, times(2)).selectForPrompt(persona.id, true, "我能吃花生吗")
+    }
+
+    @Test
+    fun `memory watch revalidates the captured question and detects a revised fact`() = runTest {
+        configureBaseMocks(flow { emit(delta("partial")); awaitCancellation() })
+        val original = com.example.persona.domain.model.Memory("note", "OFFLINE_USER", persona.id,
+            com.example.persona.domain.model.MemoryType.FACT, "我不吃花生", createdAt = 1L, updatedAt = 1L)
+        val rows = MutableStateFlow(listOf(original))
+        whenever(memoryRepository.observe(persona.id)).thenReturn(rows)
+        whenever(memoryRepository.selectForPrompt(persona.id, false, "花生")).thenReturn(listOf(original))
+        val viewModel = createViewModel()
+        viewModel.loadPersonaInfo(persona.id)
+        mainDispatcher.scheduler.advanceUntilIdle()
+        viewModel.sendMessage("花生")
+        mainDispatcher.scheduler.runCurrent()
+        val revised = original.copy(content = "我对花生过敏", revision = 2)
+        whenever(memoryRepository.selectForPrompt(persona.id, false, "花生")).thenReturn(listOf(revised))
+        rows.value = listOf(revised)
+        mainDispatcher.scheduler.advanceUntilIdle()
+        assertFalse(viewModel.isGenerating.value)
+        verify(memoryRepository, times(2)).selectForPrompt(persona.id, false, "花生")
+    }
+
+    @Test
+    fun `curation runs after persistence in captured identity and failure keeps chatting`() = runTest {
+        configureBaseMocks(flowOf(delta("reply"), completed()))
+        val curation: MemoryCurationRepository = mock()
+        val saved = mutableListOf<Message>()
+        whenever(chatRepository.saveMessage(any(), any())).thenAnswer {
+            saved += it.getArgument<Message>(0)
+            Unit
+        }
+        val identity = authManager.identity.value
+        whenever(curation.propose(any(), any(), eq(true))).doSuspendableAnswer {
+            assertTrue(identity === authManager.requestIdentity())
+            val messageId = it.getArgument<String>(1)
+            assertTrue(saved.any { message -> message.id == messageId && message.isFromUser })
+            throw IllegalStateException("proposal failed")
+        }
+        val viewModel = createViewModel(curation)
+        viewModel.loadPersonaInfo(persona.id)
+        mainDispatcher.scheduler.advanceUntilIdle()
+        viewModel.sendMessage("记住我不吃花生")
+        mainDispatcher.scheduler.advanceUntilIdle()
+        verify(curation).propose(persona.id, saved.first().id, true)
+        verify(hybridRepository).streamResponse(any(), any(), any(), any(), any(), any(), any())
+        assertFalse(viewModel.isGenerating.value)
+    }
+
+    @Test
+    fun `curation cancellation prevents generation`() = runTest {
+        configureBaseMocks(flowOf(delta("reply"), completed()))
+        val curation: MemoryCurationRepository = mock()
+        whenever(curation.propose(any(), any(), eq(true))).thenThrow(CancellationException("cancelled"))
+        val viewModel = createViewModel(curation)
+        viewModel.loadPersonaInfo(persona.id)
+        mainDispatcher.scheduler.advanceUntilIdle()
+        viewModel.sendMessage("记住我不吃花生")
+        mainDispatcher.scheduler.advanceUntilIdle()
+        verify(hybridRepository, times(0)).streamResponse(any(), any(), any(), any(), any(), any(), any())
+        assertFalse(viewModel.isGenerating.value)
+    }
+
+    @Test
+    fun `identity change during curation cancels the captured chat`() = runTest {
+        configureBaseMocks(flowOf(delta("reply"), completed()))
+        val curation: MemoryCurationRepository = mock()
+        val identity = authManager.identity.value
+        whenever(curation.propose(any(), any(), eq(true))).doSuspendableAnswer {
+            assertTrue(identity === authManager.requestIdentity())
+            authManager.invalidateSession()
+            authManager.requestIdentity()
+            Unit
+        }
+        val viewModel = createViewModel(curation)
+        viewModel.loadPersonaInfo(persona.id)
+        mainDispatcher.scheduler.advanceUntilIdle()
+        viewModel.sendMessage("记住我不吃花生")
+        mainDispatcher.scheduler.advanceUntilIdle()
+        verify(hybridRepository, times(0)).streamResponse(any(), any(), any(), any(), any(), any(), any())
+        assertFalse(viewModel.isGenerating.value)
+        assertNull(viewModel.currentPersona.value)
+    }
+
+    private fun createViewModel(memoryCuration: MemoryCurationRepository? = null): ChatViewModel {
+        return ChatViewModel(hybridRepository, personaRepository, chatRepository, authManager,
+            memoryRepository, memoryCuration)
     }
 
     private fun delta(text: String): GenerationEvent = GenerationEvent.Delta(text)

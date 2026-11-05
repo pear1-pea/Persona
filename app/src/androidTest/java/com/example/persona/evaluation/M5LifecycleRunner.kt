@@ -231,8 +231,8 @@ internal class M5LifecycleRunner(private val instrumentation: Instrumentation) {
 
     private class AuditMemory(private val actual: MemoryRepository) : MemoryRepository by actual {
         val latest = ConcurrentHashMap<Boolean, List<Memory>>()
-        override suspend fun selectForPrompt(personaId: String, cloud: Boolean): List<Memory> =
-            actual.selectForPrompt(personaId, cloud).also { latest[cloud] = it }
+        override suspend fun selectForPrompt(personaId: String, cloud: Boolean, query: String): List<Memory> =
+            actual.selectForPrompt(personaId, cloud, query).also { latest[cloud] = it }
     }
 
     private fun blockedAuthApi(): AuthApi = checkNotNull(AuthApi::class.java.cast(Proxy.newProxyInstance(

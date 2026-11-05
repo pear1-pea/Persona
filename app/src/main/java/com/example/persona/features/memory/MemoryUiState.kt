@@ -11,9 +11,13 @@ data class MemoryDraft(
     val shared: Boolean = false,
     val cloudAllowed: Boolean = false,
     val sourceMessageId: String? = null,
-    val expiresAt: Long? = null
+    val expiresAt: Long? = null,
+    val expiryInput: String? = null
 ) {
-    val valid: Boolean get() = content.isNotBlank() && content.length in 1..400
+    val valid: Boolean get() = content.isNotBlank() && content.length in 1..400 &&
+        (expiryInput?.let { input -> runCatching {
+            parseMemoryExpiry(input)?.let { it > System.currentTimeMillis() } ?: true
+        }.getOrDefault(false) } ?: true)
 }
 
 enum class MemoryOperation { SAVING, DELETING }

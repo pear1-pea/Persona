@@ -10,6 +10,8 @@ import com.example.persona.data.local.MIGRATION_3_4
 import com.example.persona.data.local.MIGRATION_4_5
 import com.example.persona.data.local.MIGRATION_5_6
 import com.example.persona.data.local.MIGRATION_6_7
+import com.example.persona.data.local.MIGRATION_8_9
+import com.example.persona.data.local.installMemoryCurationTriggers
 import com.example.persona.data.local.MIGRATION_7_8
 import com.example.persona.data.local.installMemorySourceDeletionTrigger
 import com.example.persona.data.local.SEED_PERSONAS
@@ -37,10 +39,12 @@ object DatabaseModule {
     internal val memoryIntegrityCallback = object : RoomDatabase.Callback() {
         override fun onCreate(db: SupportSQLiteDatabase) {
             installMemorySourceDeletionTrigger(db)
+            installMemoryCurationTriggers(db)
         }
 
         override fun onOpen(db: SupportSQLiteDatabase) {
             installMemorySourceDeletionTrigger(db)
+            installMemoryCurationTriggers(db)
         }
     }
 
@@ -77,7 +81,8 @@ object DatabaseModule {
                 MIGRATION_4_5,
                 MIGRATION_5_6,
                 MIGRATION_6_7,
-                MIGRATION_7_8
+                MIGRATION_7_8,
+                MIGRATION_8_9
             )
             .build()
     }

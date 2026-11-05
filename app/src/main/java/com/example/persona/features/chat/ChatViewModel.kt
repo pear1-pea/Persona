@@ -24,6 +24,7 @@ import com.example.persona.domain.model.MessageStatus
 import com.example.persona.domain.model.Memory
 import com.example.persona.domain.model.Persona
 import com.example.persona.domain.repository.MemoryRepository
+import com.example.persona.domain.repository.MemoryCurationRepository
 import com.example.persona.domain.repository.ChatRepository
 import com.example.persona.domain.repository.PersonaRepository
 import com.google.gson.Gson
@@ -55,13 +56,15 @@ class ChatViewModel @Inject constructor(
     private val personaRepository: PersonaRepository,
     private val chatRepository: ChatRepository,
     private val authManager: AuthManager,
-    private val memoryRepository: MemoryRepository
+    private val memoryRepository: MemoryRepository,
+    private val memoryCuration: MemoryCurationRepository? = null
 ) : BaseViewModel() {
 
     private var activeGenerationSession: GenerationSession? = null
     private class ActiveMemoryContext(
         val sessionId: String,
         val epoch: Long,
+        var query: String = "",
         var evidence: List<Memory>? = null,
         var cloudEvidence: List<Memory>? = null
     )
@@ -185,8 +188,10 @@ class ChatViewModel @Inject constructor(
         val captured = activeMemoryContext ?: return
         val evidence = captured.evidence ?: return
         val cloudEvidence = captured.cloudEvidence
-        val current = memoryRepository.selectForPrompt(personaId, cloud = false)
-        val currentCloud = cloudEvidence?.let { memoryRepository.selectForPrompt(personaId, cloud = true) }
+        val current = memoryRepository.selectForPrompt(personaId, cloud = false, query = captured.query)
+        val currentCloud = cloudEvidence?.let {
+            memoryRepository.selectForPrompt(personaId, cloud = true, query = captured.query)
+        }
         if (activeMemoryContext === captured && activeGenerationSession?.id == captured.sessionId &&
             (captured.epoch != memoryRepository.changes.value || evidence != current || cloudEvidence != currentCloud)
         ) stopGenerating()
@@ -264,11 +269,12 @@ class ChatViewModel @Inject constructor(
         val memoryContext = activeMemoryContext?.takeIf { it.sessionId == session.id }
             ?: throw CancellationException("Generation was replaced")
         val memoryVersion = memoryContext.epoch
+        memoryContext.query = userText
         val stableHistory = chatRepository.getRecentMessages(persona.id, LOCAL_HISTORY_LIMIT)
             .filterStableHistory()
         val localHistory = stableHistory.toLocalChatHistory()
         val cloudHistory = stableHistory.filterNot { it.localOnly }.toLocalChatHistory()
-        val initialMemories = memoryRepository.selectForPrompt(persona.id, cloud = false)
+        val initialMemories = memoryRepository.selectForPrompt(persona.id, cloud = false, query = userText)
         if (activeMemoryContext !== memoryContext || memoryRepository.changes.value != memoryVersion) {
             throw CancellationException("Memory changed during request preparation")
         }
@@ -280,17 +286,17 @@ class ChatViewModel @Inject constructor(
             if (memoryRepository.changes.value != memoryVersion) {
                 throw CancellationException("Memory changed; resend with the current revision")
             }
-            val currentLocalMemories = memoryRepository.selectForPrompt(persona.id, cloud = false)
+            val currentLocalMemories = memoryRepository.selectForPrompt(persona.id, cloud = false, query = userText)
             if (currentLocalMemories != initialMemories) {
                 throw CancellationException("Memory evidence changed; resend with the current revision")
             }
             val memories = if (backend == Backend.CLOUD) {
-                memoryRepository.selectForPrompt(persona.id, cloud = true)
+                memoryRepository.selectForPrompt(persona.id, cloud = true, query = userText)
             } else currentLocalMemories
             if (backend == Backend.CLOUD) {
                 // Register before the final read so source deletion cannot be missed during preparation.
                 memoryContext.cloudEvidence = memories.toList()
-                if (memoryRepository.selectForPrompt(persona.id, cloud = true) != memories) {
+                if (memoryRepository.selectForPrompt(persona.id, cloud = true, query = userText) != memories) {
                     throw CancellationException("Cloud memory changed during request preparation")
                 }
             }
@@ -314,6 +320,14 @@ class ChatViewModel @Inject constructor(
             excludeFromHistory = hasMemory
         )
         chatRepository.saveMessage(userMessage, persona)
+        try {
+            memoryCuration?.propose(persona.id, userMessage.id, explicitOnly = true)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Exception) {
+            Log.e(TAG, "Memory proposal failed")
+        }
+        authManager.requestIdentity()
 
         var currentAiMessageId: String? = null
         var currentContent = StringBuilder()

@@ -187,6 +187,46 @@ class MemoryViewModelTest {
     }
 
     @Test
+    fun `explicit ISO date changes expiry while preserving provenance and revision`() = runTest(dispatcher) {
+        repository.rows.value = listOf(memory(source = "source"))
+        runCurrent()
+        vm.editMemory("m")
+        vm.updateDraft(vm.uiState.value.draft!!.copy(expiryInput = "2099-12-31"))
+        vm.save()
+        advanceUntilIdle()
+        val saved = repository.saves.single()
+        assertEquals(parseMemoryExpiry("2099-12-31"), saved.expires)
+        assertEquals("source", saved.source)
+        assertEquals(3, saved.revision)
+    }
+
+    @Test
+    fun `explicit permanent selection clears expiry`() = runTest(dispatcher) {
+        repository.rows.value = listOf(memory())
+        runCurrent()
+        vm.editMemory("m")
+        vm.updateDraft(vm.uiState.value.draft!!.copy(expiryInput = ""))
+        vm.save()
+        advanceUntilIdle()
+        assertNull(repository.saves.single().expires)
+    }
+
+    @Test
+    fun `invalid ISO dates prevent saves and survive recreation`() = runTest(dispatcher) {
+        vm.newMemory()
+        listOf("2099-02-30", "2099-2-03", "2000-01-01").forEach { expiry ->
+            vm.updateDraft(vm.uiState.value.draft!!.copy(content = "Fact", expiryInput = expiry))
+            vm.save()
+            advanceUntilIdle()
+            assertEquals(MemoryError.INVALID_CONTENT, vm.uiState.value.error)
+        }
+        val next = create(restored(handle))
+        assertEquals("2000-01-01", next.uiState.value.draft!!.expiryInput)
+        assertFalse(next.uiState.value.draft!!.valid)
+        assertTrue(repository.saves.isEmpty())
+    }
+
+    @Test
     fun `CAS failure keeps original revision and draft until explicit cancellation`() = runTest(dispatcher) {
         repository.rows.value = listOf(memory())
         runCurrent()
@@ -538,6 +578,6 @@ class MemoryViewModelTest {
         }
 
         override suspend fun deleteForPersona(personaId: String) = Unit
-        override suspend fun selectForPrompt(personaId: String, cloud: Boolean): List<Memory> = emptyList()
+        override suspend fun selectForPrompt(personaId: String, cloud: Boolean, query: String): List<Memory> = emptyList()
     }
 }

@@ -204,6 +204,105 @@ class RoomMemoryRepositoryTest {
         }
     }
 
+    @Test
+    fun `query finds an old relevant fact beyond a large recent scan window`() = runTest {
+        val old = memory("old", "我不吃花生").copy(updatedAt = 1)
+        val rows = (1..600).map { memory("recent-$it", "最近天气晴朗") } + old
+        whenever(dao.selectForPrompt(eq("owner"), eq("p"), eq(false), any())).thenReturn(rows)
+        whenever(dao.findOwned("old", "owner")).thenReturn(old)
+        assertEquals(listOf("old"), repository.selectForPrompt("p", false, "花生过敏").map { it.id })
+        assertTrue(repository.selectForPrompt("p", false, "天文").isEmpty())
+    }
+
+    @Test
+    fun `ranked selection rechecks revision scope expiry and cloud permission`() = runTest {
+        val original = memory("id", "咖啡").copy(cloudAllowed = true)
+        whenever(dao.selectForPrompt(eq("owner"), eq("p"), eq(true), any())).thenReturn(listOf(original))
+        val invalid = listOf(
+            null, original.copy(revision = 2), original.copy(content = "咖啡已更正"),
+            original.copy(ownerId = "other"), original.copy(personaId = "other"),
+            original.copy(deleted = true), original.copy(expiresAt = 1), original.copy(cloudAllowed = false)
+        )
+        for (current in invalid) {
+            whenever(dao.findOwned("id", "owner")).thenReturn(current)
+            assertTrue(repository.selectForPrompt("p", true, "咖啡").isEmpty())
+        }
+        whenever(dao.findOwned("id", "owner")).thenReturn(original)
+        assertEquals(listOf("id"), repository.selectForPrompt("p", true, "coffee").map { it.id })
+    }
+
+    @Test
+    fun `ranking cannot promote forbidden candidates and keeps count and budget`() = runTest {
+        val allowed = (1..6).map { memory("$it", "咖啡" + "a".repeat(398)).copy(cloudAllowed = true) }
+        val forbidden = listOf(
+            memory("private", "咖啡"), memory("foreign", "咖啡").copy(ownerId = "other"),
+            memory("other", "咖啡").copy(personaId = "other"), memory("deleted", "咖啡").copy(deleted = true),
+            memory("expired", "咖啡").copy(expiresAt = 1)
+        )
+        whenever(dao.selectForPrompt(eq("owner"), eq("p"), eq(true), any())).thenReturn(forbidden + allowed)
+        for (row in allowed) whenever(dao.findOwned(row.id, "owner")).thenReturn(row)
+        val result = repository.selectForPrompt("p", true, "咖啡")
+        assertEquals(listOf("1", "2", "3"), result.map { it.id })
+        assertEquals(1200, result.sumOf { it.content.length })
+        val short = allowed.map { it.copy(content = "咖啡") }
+        whenever(dao.selectForPrompt(eq("owner"), eq("p"), eq(true), any())).thenReturn(short)
+        for (row in short) whenever(dao.findOwned(row.id, "owner")).thenReturn(row)
+        assertEquals(4, repository.selectForPrompt("p", true, "咖啡").size)
+    }
+
+    @Test
+    fun `summary edits cannot promote cloud permission change scope or replace sources`() = runTest {
+        val original = memory("summary-id", "摘要")
+        whenever(dao.findOwned("summary-id", "owner")).thenReturn(original)
+        for ((scope, cloud, source) in listOf(
+            Triple("p", true, null), Triple(null, false, null),
+            Triple("other", false, null), Triple("p", false, "different-source")
+        )) {
+            assertTrue(runCatching {
+                repository.save(scope, MemoryType.FACT, "edited", cloud, source,
+                    "summary-id", expectedRevision = 1)
+            }.exceptionOrNull() is IllegalArgumentException)
+        }
+        verify(dao, never()).saveMemory(any(), anyOrNull())
+        whenever(dao.saveMemory(any(), eq(1))).thenAnswer {
+            it.getArgument<MemoryEntity>(0).copy(revision = 2)
+        }
+        val edited = repository.save("p", MemoryType.FACT, "edited", false,
+            id = "summary-id", expectedRevision = 1)
+        assertFalse(edited.cloudAllowed)
+        assertEquals("p", edited.personaId)
+        assertNull(edited.sourceMessageId)
+        assertEquals(2, edited.revision)
+    }
+
+    @Test
+    fun `internal save reuses held identity lock and rejects a different owner`() = runTest {
+        whenever(dao.saveMemory(any(), isNull())).thenAnswer { it.getArgument<MemoryEntity>(0) }
+        auth.withIdentity {
+            auth.withLocalIdentity { owner ->
+                val saved = repository.saveWithinIdentity(owner, "p", MemoryType.FACT, "花生", false,
+                    null, null, null, null)
+                assertEquals(owner, saved.ownerId)
+            }
+        }
+        assertEquals(1L, repository.changes.value)
+        assertTrue(runCatching {
+            repository.saveWithinIdentity("other", "p", MemoryType.FACT, "花生", false,
+                null, null, null, null)
+        }.exceptionOrNull() is IllegalStateException)
+        verify(dao, times(1)).saveMemory(any(), isNull())
+    }
+
+    @Test
+    fun `blank query retains the legacy candidate window before validation`() = runTest {
+        val first = (1..4).map { memory("$it", "fact") }
+        val corruptLater = memory("fifth").copy(type = "UNKNOWN")
+        whenever(dao.selectForPrompt(eq("owner"), eq("p"), eq(false), any()))
+            .thenReturn(first + corruptLater)
+        assertEquals(first.map { it.id }, repository.selectForPrompt("p", false).map { it.id })
+        verify(dao, never()).findOwned(any(), any())
+    }
+
     private fun memory(id: String, content: String = "fact") = MemoryEntity(
         id, "owner", "p", MemoryType.FACT.name, content, createdAt = 1, updatedAt = 2
     )
