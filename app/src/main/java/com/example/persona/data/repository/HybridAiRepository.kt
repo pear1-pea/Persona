@@ -17,6 +17,7 @@ import com.example.persona.core.ai.ModelScanReport
 import com.example.persona.core.ai.PrivacyLevel
 import com.example.persona.core.ai.Route
 import com.example.persona.core.ai.RoutingContextProvider
+import com.example.persona.core.ai.NetworkState
 import com.example.persona.core.ai.RoutingDecision
 import com.example.persona.core.ai.RoutingInput
 import com.example.persona.core.ai.HybridRouter
@@ -49,7 +50,7 @@ class HybridAiRepository internal constructor(
     private val localAiEngine: LocalAiEngine,
     private val localModelManager: LocalModelManager,
     private val router: HybridRouter,
-    private val routingContextProvider: RoutingContextProvider,
+    private val networkState: () -> NetworkState,
     private val routeScope: CoroutineScope,
     private val modelDispatcher: CoroutineDispatcher = Dispatchers.IO
 ) {
@@ -65,7 +66,7 @@ class HybridAiRepository internal constructor(
         localAiEngine,
         localModelManager,
         router,
-        routingContextProvider,
+        routingContextProvider::networkState,
         CoroutineScope(SupervisorJob() + Dispatchers.Default)
     )
 
@@ -211,7 +212,7 @@ class HybridAiRepository internal constructor(
                 localAdmission = admission,
                 privacyLevel = privacyLevel,
                 taskComplexity = taskComplexity,
-                networkState = routingContextProvider.networkState(),
+                networkState = networkState(),
                 batteryPercent = profile.batteryPercent,
                 thermalStatus = profile.thermalStatus,
                 powerSaveMode = profile.powerSaveMode,
@@ -277,6 +278,34 @@ class HybridAiRepository internal constructor(
         emitAll(streamAuthorizedResponse(mode, session, systemPrompt, userMessage, history, route, params))
     }
 
+    private fun streamCloudWithContext(
+        session: GenerationSession,
+        systemPrompt: String,
+        userMessage: String,
+        history: List<ChatMessage>,
+        params: GenerationParams,
+        fallbackRoute: Route? = null
+    ): Flow<GenerationEvent> = flow {
+        val context = session.prepareContext(Backend.CLOUD, systemPrompt, history)
+        currentCoroutineContext().ensureActive()
+        session.stopReason?.let {
+            emit(GenerationEvent.Stopped(it, ""))
+            return@flow
+        }
+        if (fallbackRoute != null && !canFallbackToCloud(session, fallbackRoute)) {
+            emit(GenerationEvent.Failed(
+                backend = Backend.CLOUD,
+                error = GenerationError(GenerationErrorType.NETWORK,
+                    "网络或路由策略已变化，自动云端兜底已取消，请重新发送"),
+                partialText = ""
+            ))
+            return@flow
+        }
+        emitAll(cloudRepository.streamResponseWithParams(
+            context.systemPrompt, context.userMessage ?: userMessage, context.history, params
+        ))
+    }
+
     private fun streamAuthorizedResponse(
         mode: Mode,
         session: GenerationSession,
@@ -288,7 +317,7 @@ class HybridAiRepository internal constructor(
     ): Flow<GenerationEvent> = when (mode) {
         Mode.CLOUD -> flow {
             _activeMode.value = Mode.CLOUD
-            emitAll(cloudRepository.streamResponseWithParams(systemPrompt, userMessage, history, params))
+            emitAll(streamCloudWithContext(session, systemPrompt, userMessage, history, params))
         }
         Mode.LOCAL -> flow {
             session.stopReason?.let { reason ->
@@ -334,12 +363,18 @@ class HybridAiRepository internal constructor(
                     currentCoroutineContext().ensureActive()
                     if (fallback && canFallbackToCloud(session, route)) {
                         _activeMode.value = Mode.CLOUD
-                        emitAll(cloudRepository.streamResponseWithParams(systemPrompt, userMessage, history, params))
+                        emitAll(streamCloudWithContext(session, systemPrompt, userMessage, history, params, fallbackRoute = route))
                     }
                     return@flow
                 }
                 generation.stopReason?.let { reason ->
                     emit(GenerationEvent.Stopped(reason, ""))
+                    return@flow
+                }
+                val localContext = session.prepareContext(Backend.MNN, systemPrompt, history)
+                currentCoroutineContext().ensureActive()
+                session.stopReason?.let {
+                    emit(GenerationEvent.Stopped(it, ""))
                     return@flow
                 }
                 val localPartial = StringBuilder()
@@ -349,8 +384,8 @@ class HybridAiRepository internal constructor(
                     var failure: GenerationEvent.Failed? = null
                     localAiEngine.streamResponse(
                         session = session,
-                        prompt = userMessage,
-                        history = listOf(ChatMessage("system", systemPrompt)) + history,
+                        prompt = localContext.userMessage ?: userMessage,
+                        history = listOf(ChatMessage("system", localContext.systemPrompt)) + localContext.history,
                         params = params
                     ).collect { event ->
                         if (localTerminal) return@collect
@@ -423,7 +458,7 @@ class HybridAiRepository internal constructor(
                     emit(localFailure.copy(fallbackPlanned = true))
                     currentCoroutineContext().ensureActive()
                     if (!canFallbackToCloud(session, route)) return@flow
-                    emitAll(cloudRepository.streamResponseWithParams(systemPrompt, userMessage, history, params))
+                    emitAll(streamCloudWithContext(session, systemPrompt, userMessage, history, params, fallbackRoute = route))
                 } else if (!terminalDelivered && localFailure != null && stopReason == null) {
                     generation.model.takeUnless { localFailure.error.type == GenerationErrorType.INPUT_BUDGET_EXCEEDED }?.let { model ->
                         val cause = localFailure.error.cause
@@ -453,7 +488,7 @@ class HybridAiRepository internal constructor(
     private fun canFallbackToCloud(session: GenerationSession, route: Route): Boolean =
         session.stopReason == null && route == Route.LOCAL_THEN_CLOUD &&
             session.routingDecision?.cloudAllowed != false &&
-            routingContextProvider.networkState() !in setOf(
+            networkState() !in setOf(
                 com.example.persona.core.ai.NetworkState.OFFLINE,
                 com.example.persona.core.ai.NetworkState.METERED
             )

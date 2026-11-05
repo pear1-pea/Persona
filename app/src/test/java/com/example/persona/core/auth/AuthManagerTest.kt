@@ -5,6 +5,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Test
+import org.junit.Before
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.any
 import org.mockito.kotlin.whenever
@@ -33,6 +34,11 @@ class AuthManagerTest {
     private val sessionTokenStore: SessionTokenStore = mock()
     private val personaDao: PersonaDao = mock()
     private val authManager = AuthManager(authApi, sessionTokenStore, personaDao)
+
+    @Before
+    fun emptyDeletionResponse() = runTest {
+        whenever(authApi.deleteAccount(any(), any())).thenReturn(Response.success<Void>(204, null))
+    }
 
     @Test
     fun `isLoggedIn returns false when there is no cached Authing user`() {
@@ -193,6 +199,7 @@ class AuthManagerTest {
         whenever(authApi.deleteAccount(any(), any())).doSuspendableAnswer {
             started.complete(Unit)
             response.await()
+            Response.success<Void>(204, null)
         }
         authManager.signIn("a@test.dev", "password")
         val deletion = async { authManager.deleteAccount("password") }
@@ -214,6 +221,7 @@ class AuthManagerTest {
         whenever(authApi.deleteAccount(any(), any())).doSuspendableAnswer {
             started.complete(Unit)
             response.await()
+            Response.success<Void>(204, null)
         }
         authManager.signIn("a@test.dev", "password")
         val deletion = launch { authManager.deleteAccount("password") }

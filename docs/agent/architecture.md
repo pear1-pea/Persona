@@ -91,7 +91,35 @@ cancel old generation; late 401s invalidate only their original token. Room dele
 only the requested owner's messages and retains shared Persona parents while other
 owners still reference them. Message insertion rejects conflicting primary keys.
 Logout retains history; account deletion records durable pending local cleanup and
-retries failures. `OFFLINE_USER` remains independent. The database remains schema v7.
+retries failures. `OFFLINE_USER` remains independent. The P2 memory candidate uses
+schema v8, with an explicit 7-to-8 migration. Windows compilation and device migration,
+DAO, UI and ownership checks passed; model recall quality remains a separate gate.
+
+### Explicit memory (P2 candidate)
+
+`RoomMemoryRepository` stores user-confirmed notes on this device, isolated by owner
+and Persona. `personaId=null` requires an explicit account-wide share; cloud use is
+a separate opt-in. Writes check source ownership and normal user-message status,
+use revision CAS, and clear deleted content while retaining a tombstone. Source
+message deletion invalidates linked notes. Account cleanup deletes that owner's notes.
+
+Each backend prepares a fresh authorized context through `GenerationSession`;
+fallback never reuses a local memory prompt or partial reply. The initial selector
+uses at most four newest records with a 1200-character UTF-16 content budget, without
+semantic retrieval. Existing token/character planners still enforce executor budgets.
+
+`MemoryPrompt` (`quoted-user-facts-v4`) adds only permitted content as quoted JSON
+facts to the current user turn. Trusted system rules stay separate; provenance stays
+in the application, and the augmented reference body is not saved as a user message.
+`GenerationContext.userMessage` is rebuilt for each executor, including fallback.
+This input path does not guarantee factual recall: the 0.5B device repeat failed.
+See the P2 memory QA report before changing model or sampling defaults.
+
+Memory changes invalidate affected history for prompt replay while preserving its
+display. Memory-bearing turns are not automatically replayed; local-only history is
+excluded from cloud context. Legacy v7 messages have no recorded replay consent and
+are retained for display but excluded from new prompts after migration. Editing or
+deleting notes cancels stale generation; database observations also catch source deletion.
 
 ## Backend (`backend/`)
 

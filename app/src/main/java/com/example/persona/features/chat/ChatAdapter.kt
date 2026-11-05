@@ -12,8 +12,19 @@ import com.example.persona.domain.model.Message
 import com.example.persona.domain.model.MessageStatus
 
 class ChatAdapter(
-    private val markdownHelper: MarkdownHelper
+    private val markdownHelper: MarkdownHelper,
+    private val onSaveMemory: (Message) -> Unit = {}
 ) : PagingDataAdapter<Message, RecyclerView.ViewHolder>(MessageDiffCallback) {
+
+    private var streamingMessage: StreamingMessage? = null
+
+    fun updateStreamingMessage(message: StreamingMessage?) {
+        val affectedIds = setOfNotNull(streamingMessage?.messageId, message?.messageId)
+        streamingMessage = message
+        snapshot().items.forEachIndexed { index, item ->
+            if (item.id in affectedIds) notifyItemChanged(index)
+        }
+    }
 
     private val typeSent = 1
     private val typeReceived = 2
@@ -60,15 +71,24 @@ class ChatAdapter(
     }
 
     private fun bindMessage(holder: RecyclerView.ViewHolder, message: Message) {
+        holder.itemView.setOnLongClickListener {
+            if (message.isFromUser && message.status == MessageStatus.NORMAL) {
+                onSaveMemory(message)
+                true
+            } else false
+        }
+        val displayed = streamingMessage?.takeIf { it.messageId == message.id }?.let {
+            message.copy(content = it.content, status = it.status)
+        } ?: message
         if (holder is SentViewHolder) {
-            holder.binding.tvContent.text = message.content
+            holder.binding.tvContent.text = displayed.content
         } else if (holder is ReceivedViewHolder) {
-            if (message.status == MessageStatus.GENERATING) {
-                holder.binding.tvContent.text = message.content
+            if (displayed.status == MessageStatus.GENERATING) {
+                holder.binding.tvContent.text = displayed.content
                 holder.binding.tvContent.linksClickable = false
                 holder.binding.tvContent.movementMethod = null
             } else {
-                markdownHelper.setMarkdown(holder.binding.tvContent, message.content)
+                markdownHelper.setMarkdown(holder.binding.tvContent, displayed.content)
             }
         }
     }

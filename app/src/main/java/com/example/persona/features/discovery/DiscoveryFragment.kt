@@ -29,8 +29,6 @@ class DiscoveryFragment : Fragment() {
     private val viewModel: DiscoveryViewModel by viewModels()
     private lateinit var adapter: DiscoveryAdapter
 
-    private val categories = listOf("All", "Sci-Fi", "Fantasy", "Realistic", "Anime")
-
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?,
         savedInstanceState: Bundle?
@@ -43,17 +41,17 @@ class DiscoveryFragment : Fragment() {
         super.onViewCreated(view, savedInstanceState)
 
         setupRecyclerView()
-        setupFilterChips()
         observeData()
         setupSearchView()
         observeErrorEvents(viewModel, binding.root)
     }
 
     private fun setupSearchView() {
+        binding.svDiscovery.setQuery(viewModel.searchQuery, false)
         binding.svDiscovery.setOnQueryTextListener(object : androidx.appcompat.widget.SearchView.OnQueryTextListener {
 
             override fun onQueryTextSubmit(query: String?): Boolean {
-                binding.svDiscovery.clearFocus() 
+                binding.svDiscovery.clearFocus()
                 return true
             }
 
@@ -80,16 +78,18 @@ class DiscoveryFragment : Fragment() {
         }
     }
 
-    private fun setupFilterChips() {
+    private fun setupFilterChips(categories: List<String>) {
         val chipGroup = binding.chipGroupFilter
-        chipGroup.removeAllViews() 
+        chipGroup.removeAllViews()
 
-        for (category in categories) {
+        val options = listOf<String?>(null) +
+            (categories + listOfNotNull(viewModel.selectedCategory)).distinctBy { it.lowercase() }
+        for (category in options) {
             val chip = Chip(requireContext()).apply {
-                text = category
+                id = View.generateViewId()
+                text = category ?: getString(R.string.product_all_traits)
                 isCheckable = true
                 isClickable = true
-
 
                 setChipBackgroundColorResource(R.color.selector_filter_chip_bg)
 
@@ -97,9 +97,7 @@ class DiscoveryFragment : Fragment() {
 
                 chipStrokeWidth = 0f
 
-                if (category == "All") {
-                    isChecked = true
-                }
+                isChecked = category.equals(viewModel.selectedCategory, ignoreCase = true)
             }
 
             chip.setOnClickListener {
@@ -113,11 +111,22 @@ class DiscoveryFragment : Fragment() {
     private fun observeData() {
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
-                viewModel.uiState.collect { list ->
-                    adapter.submitList(list)
+                launch {
+                    viewModel.uiState.collect { list ->
+                        // Null clears synchronously when the account or filtered results change.
+                        adapter.submitList(list.takeIf { it.isNotEmpty() })
+                    }
+                }
+                launch {
+                    viewModel.categories.collect { categories -> setupFilterChips(categories) }
                 }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        viewModel.refresh()
     }
 
     override fun onDestroyView() {

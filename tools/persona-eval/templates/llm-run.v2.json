@@ -1,0 +1,62 @@
+{
+  "run_id": "FILL_BEFORE_REAL_MODEL_RUN",
+  "status": "not_run",
+  "dataset_version": "m5-zh-explicit-v2",
+  "dataset_sha256": null,
+  "split": "heldout",
+  "config_version": "m5-config-v3",
+  "baseline_config_snapshot_ref": null,
+  "candidate_config_snapshot_ref": null,
+  "required_component_versions_per_arm": [
+    "model",
+    "prompt",
+    "parameters",
+    "retrieval",
+    "context_assembly"
+  ],
+  "effective_parameters_and_runtime_ref": null,
+  "application_boundary_evidence_ref": null,
+  "synthetic_data_only": true,
+  "started_at": null,
+  "completed_at": null,
+  "review_protocol_version": "human-pairwise-v1",
+  "blinded_order_mapping_ref": null,
+  "cases": [],
+  "case_entry_template": {
+    "case_id": null,
+    "repetition": null,
+    "authorized_evidence_refs": [],
+    "arm_a_output_ref": null,
+    "arm_b_output_ref": null,
+    "human_reviewer": null,
+    "winner": null,
+    "allowed_winners": [
+      "A",
+      "B",
+      "tie",
+      "both_fail",
+      "unresolved"
+    ],
+    "must_checks": [],
+    "must_not_violations": [],
+    "dimension_scores_a": {},
+    "dimension_scores_b": {},
+    "scores_range": [
+      0,
+      1,
+      2
+    ],
+    "rationale": null,
+    "second_reviewer_on_disagreement": null
+  },
+  "summary": {
+    "reviewed_pairs": 0,
+    "wins_a": null,
+    "wins_b": null,
+    "ties": null,
+    "both_failed": null,
+    "unresolved": null,
+    "privacy_or_boundary_violations": null,
+    "release_decision": "pending_human_review"
+  }
+}

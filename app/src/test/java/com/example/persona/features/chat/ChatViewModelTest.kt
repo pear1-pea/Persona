@@ -16,6 +16,7 @@ import com.example.persona.data.repository.HybridAiRepository
 import com.example.persona.domain.model.Message
 import com.example.persona.domain.model.MessageStatus
 import com.example.persona.domain.model.Persona
+import com.example.persona.domain.repository.MemoryRepository
 import com.example.persona.domain.repository.ChatRepository
 import com.example.persona.domain.repository.PersonaRepository
 import kotlinx.coroutines.CancellationException
@@ -40,9 +41,11 @@ import org.junit.Test
 import org.mockito.kotlin.any
 import org.mockito.kotlin.anyOrNull
 import org.mockito.kotlin.doAnswer
+import org.mockito.kotlin.doSuspendableAnswer
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.whenever
 import org.mockito.kotlin.verify
+import org.mockito.kotlin.times
 import org.mockito.kotlin.argumentCaptor
 import com.example.persona.core.ai.GenerationSession
 import com.google.gson.Gson
@@ -57,6 +60,8 @@ class ChatViewModelTest {
     private val hybridRepository: HybridAiRepository = mock()
     private val personaRepository: PersonaRepository = mock()
     private val chatRepository: ChatRepository = mock()
+    private val memoryRepository: MemoryRepository = mock()
+    private val memoryChanges = MutableStateFlow(0L)
     private val authManager = AuthManager(mock<AuthApi>(), mock<SessionTokenStore>(), mock())
     private val activeMode = MutableStateFlow(HybridAiRepository.Mode.CLOUD)
     private val localEngineState = MutableStateFlow<EngineState>(EngineState.Idle)
@@ -74,6 +79,7 @@ class ChatViewModelTest {
     fun setUp() {
         mainDispatcher = StandardTestDispatcher()
         kotlinx.coroutines.Dispatchers.setMain(mainDispatcher)
+        whenever(memoryRepository.changes).thenReturn(memoryChanges)
         whenever(hybridRepository.activeMode).thenReturn(activeMode)
         whenever(hybridRepository.localEngineState).thenReturn(localEngineState)
     }
@@ -81,6 +87,107 @@ class ChatViewModelTest {
     @After
     fun tearDown() {
         kotlinx.coroutines.Dispatchers.resetMain()
+    }
+
+    @Test
+    fun `recreating the same conversation does not cancel its generation`() = runTest {
+        configureBaseMocks(flow {
+            emit(delta("still generating"))
+            awaitCancellation()
+        })
+        val viewModel = createViewModel()
+        viewModel.loadPersonaInfo(persona.id)
+        mainDispatcher.scheduler.advanceUntilIdle()
+        viewModel.sendMessage("hello")
+        mainDispatcher.scheduler.runCurrent()
+
+        viewModel.loadPersonaInfo(persona.id)
+        mainDispatcher.scheduler.runCurrent()
+
+        assertTrue(viewModel.isGenerating.value)
+        verify(personaRepository, times(1)).getPersonaById(persona.id)
+        viewModel.stopGenerating()
+        mainDispatcher.scheduler.advanceUntilIdle()
+    }
+
+    @Test
+    fun `cancelling after completion cannot rewrite a finished response as stopped`() = runTest {
+        val updates = mutableListOf<Pair<String, MessageStatus>>()
+        configureBaseMocks(flow {
+            emit(delta("finished response"))
+            emit(completed())
+            awaitCancellation()
+        })
+        recordUpdates(updates)
+        val viewModel = createViewModel()
+        viewModel.loadPersonaInfo(persona.id)
+        mainDispatcher.scheduler.advanceUntilIdle()
+        viewModel.sendMessage("hello")
+        mainDispatcher.scheduler.runCurrent()
+        viewModel.stopGenerating()
+        mainDispatcher.scheduler.advanceUntilIdle()
+        assertEquals("finished response" to MessageStatus.NORMAL, updates.last())
+        assertEquals(1, updates.count { it.second == MessageStatus.NORMAL })
+    }
+
+    @Test
+    fun `stopping during the final database write preserves the completed reply`() = runTest {
+        val updates = mutableListOf<Pair<String, MessageStatus>>()
+        configureBaseMocks(flow {
+            emit(delta("complete reply"))
+            emit(completed())
+        })
+        whenever(chatRepository.updateMessageContent(any(), any(), any())).doSuspendableAnswer {
+            val text = it.getArgument<String>(1)
+            val status = it.getArgument<MessageStatus>(2)
+            if (status == MessageStatus.NORMAL) kotlinx.coroutines.delay(1_000L)
+            updates += text to status
+            Unit
+        }
+        val viewModel = createViewModel()
+        viewModel.loadPersonaInfo(persona.id)
+        mainDispatcher.scheduler.advanceUntilIdle()
+        viewModel.sendMessage("hello")
+        mainDispatcher.scheduler.runCurrent()
+        viewModel.stopGenerating()
+        mainDispatcher.scheduler.advanceUntilIdle()
+        assertEquals("complete reply" to MessageStatus.NORMAL, updates.last())
+        assertFalse(updates.any { it.second == MessageStatus.STOPPED })
+    }
+
+    @Test
+    fun `streaming display retains the complete terminal text between Room checkpoints`() = runTest {
+        val updates = mutableListOf<Pair<String, MessageStatus>>()
+        configureBaseMocks(flow {
+            emit(delta("first"))
+            emit(delta(" second"))
+            emit(completed())
+        })
+        recordUpdates(updates)
+        val viewModel = createViewModel()
+        viewModel.loadPersonaInfo(persona.id)
+        mainDispatcher.scheduler.advanceUntilIdle()
+        viewModel.sendMessage("hello")
+        mainDispatcher.scheduler.advanceUntilIdle()
+        assertEquals("first second", viewModel.streamingMessage.value?.content)
+        assertEquals(MessageStatus.NORMAL, viewModel.streamingMessage.value?.status)
+        assertEquals("first second" to MessageStatus.NORMAL, updates.last())
+    }
+
+    @Test
+    fun `final local reply checks repetitions beyond the incremental scan window`() = runTest {
+        val repeatedSentence = "A".repeat(1_000) + "."
+        val text = repeatedSentence.repeat(3) + "Different ending."
+        val updates = mutableListOf<Pair<String, MessageStatus>>()
+        configureBaseMocks(flow { emit(delta(text)); emit(completed()) }, route = Route.LOCAL)
+        recordUpdates(updates)
+        val viewModel = createViewModel()
+        viewModel.loadPersonaInfo(persona.id)
+        mainDispatcher.scheduler.advanceUntilIdle()
+        viewModel.sendMessage("hello")
+        mainDispatcher.scheduler.advanceUntilIdle()
+        assertEquals(MessageStatus.STOPPED, updates.last().second)
+        assertTrue(updates.last().first.endsWith("已停止重复输出。"))
     }
 
     @Test
@@ -325,6 +432,8 @@ class ChatViewModelTest {
         recentMessages: List<Message> = emptyList(),
         route: Route = Route.CLOUD
     ) {
+        whenever(memoryRepository.selectForPrompt(any(), any())).thenReturn(emptyList())
+        whenever(memoryRepository.observe(any())).thenReturn(flowOf(emptyList()))
         whenever(hybridRepository.initializeLocalModel()).thenReturn(false)
         whenever(
             hybridRepository.selectRouteForGeneration(any(), any(), any(), any(), any())
@@ -345,8 +454,198 @@ class ChatViewModelTest {
         }.whenever(chatRepository).updateMessageContent(any(), any(), any())
     }
 
+    @Test
+    fun `memory turns and sources are not replayed from ordinary history`() = runTest {
+        configureBaseMocks(flowOf(completed()), recentMessages = listOf(
+            Message("ordinary", persona.id, "ordinary", true),
+            Message("remembered", persona.id, "old deleted fact", false, excludeFromHistory = true)
+        ))
+        val viewModel = createViewModel()
+        viewModel.loadPersonaInfo(persona.id)
+        mainDispatcher.scheduler.advanceUntilIdle()
+        viewModel.sendMessage("hello")
+        mainDispatcher.scheduler.advanceUntilIdle()
+        val history = argumentCaptor<List<com.example.persona.core.ai.ChatMessage>>()
+        verify(hybridRepository).streamResponse(any(), any(), any(), any(), history.capture(), any(), any())
+        assertEquals(listOf("ordinary"), history.firstValue.map { it.content })
+    }
+
+    @Test
+    fun `each backend gets its own permitted memory and history`() = runTest {
+        configureBaseMocks(flowOf(delta("reply"), completed()), recentMessages = listOf(
+            Message("private", persona.id, "private history", true, localOnly = true),
+            Message("public", persona.id, "ordinary history", true)
+        ))
+        val memory = com.example.persona.domain.model.Memory(
+            id = "note", ownerId = "OFFLINE_USER", personaId = persona.id,
+            type = com.example.persona.domain.model.MemoryType.FACT, content = "local secret",
+            createdAt = 1L, updatedAt = 1L
+        )
+        whenever(memoryRepository.selectForPrompt(persona.id, false)).thenReturn(listOf(memory))
+        whenever(memoryRepository.selectForPrompt(persona.id, true)).thenReturn(emptyList())
+        val viewModel = createViewModel()
+        viewModel.loadPersonaInfo(persona.id)
+        mainDispatcher.scheduler.advanceUntilIdle()
+        viewModel.sendMessage("hello")
+        mainDispatcher.scheduler.advanceUntilIdle()
+        val session = argumentCaptor<GenerationSession>()
+        verify(hybridRepository).streamResponse(any(), session.capture(), any(), any(), any(), any(), any())
+        val local = session.firstValue.prepareContext(Backend.MNN, "unused", emptyList())
+        val cloud = session.firstValue.prepareContext(Backend.CLOUD, "unused", emptyList())
+        assertTrue(local.systemPrompt.contains("Keep the character's identity separate from the user's personal facts."))
+        assertEquals(local.systemPrompt, cloud.systemPrompt)
+        assertTrue(cloud.userMessage.orEmpty().contains("已保存资料 JSON：\n[]\n\n"))
+        assertTrue(local.userMessage.orEmpty().contains("local secret"))
+        assertFalse(local.systemPrompt.contains("local secret"))
+        assertTrue(local.history.any { it.content == "private history" })
+        assertFalse(cloud.systemPrompt.contains("local secret"))
+        assertFalse(cloud.userMessage.orEmpty().contains("local secret"))
+        assertEquals(listOf("ordinary history"), cloud.history.map { it.content })
+        val saved = argumentCaptor<Message>()
+        verify(chatRepository, times(2)).saveMessage(saved.capture(), any())
+        assertTrue(saved.allValues.all { it.excludeFromHistory && it.localOnly })
+    }
+
+    @Test
+    fun `editing memory stops active generation and invalidates captured context`() = runTest {
+        configureBaseMocks(flow { emit(delta("partial")); awaitCancellation() })
+        val viewModel = createViewModel()
+        viewModel.loadPersonaInfo(persona.id)
+        mainDispatcher.scheduler.advanceUntilIdle()
+        viewModel.sendMessage("hello")
+        mainDispatcher.scheduler.runCurrent()
+        val session = argumentCaptor<GenerationSession>()
+        verify(hybridRepository).streamResponse(any(), session.capture(), any(), any(), any(), any(), any())
+        memoryChanges.value++
+        mainDispatcher.scheduler.runCurrent()
+        assertFalse(viewModel.isGenerating.value)
+        val error = runCatching { session.firstValue.prepareContext(Backend.CLOUD, "rules", emptyList()) }.exceptionOrNull()
+        assertTrue(error is kotlinx.coroutines.CancellationException)
+    }
+
+    @Test
+    fun `source deletion observed from Room stops generation even without a repository write event`() = runTest {
+        configureBaseMocks(flow { emit(delta("partial")); awaitCancellation() })
+        val memory = com.example.persona.domain.model.Memory("source-memory", "OFFLINE_USER", persona.id,
+            com.example.persona.domain.model.MemoryType.FACT, "fact", createdAt = 1L, updatedAt = 1L)
+        val rows = MutableStateFlow(listOf(memory))
+        whenever(memoryRepository.observe(persona.id)).thenReturn(rows)
+        whenever(memoryRepository.selectForPrompt(persona.id, false)).thenReturn(listOf(memory))
+        val viewModel = createViewModel()
+        viewModel.loadPersonaInfo(persona.id)
+        mainDispatcher.scheduler.advanceUntilIdle()
+        viewModel.sendMessage("hello")
+        mainDispatcher.scheduler.runCurrent()
+        assertTrue(viewModel.isGenerating.value)
+        whenever(memoryRepository.selectForPrompt(persona.id, false)).thenReturn(emptyList())
+        rows.value = emptyList()
+        mainDispatcher.scheduler.runCurrent()
+        assertFalse(viewModel.isGenerating.value)
+        assertEquals(0L, memoryChanges.value)
+    }
+
+    @Test
+    fun `late Room notification for an acknowledged edit does not cancel a fresh resend`() = runTest {
+        configureBaseMocks(flow { emit(delta("partial")); awaitCancellation() })
+        val original = com.example.persona.domain.model.Memory("note", "OFFLINE_USER", persona.id,
+            com.example.persona.domain.model.MemoryType.FACT, "old fact", createdAt = 1L, updatedAt = 1L)
+        val revised = original.copy(content = "new fact", updatedAt = 2L, revision = 2)
+        val rows = MutableStateFlow(listOf(original))
+        var selected = listOf(original)
+        whenever(memoryRepository.observe(persona.id)).thenReturn(rows)
+        whenever(memoryRepository.selectForPrompt(persona.id, false)).thenAnswer { selected }
+        val viewModel = createViewModel()
+        viewModel.loadPersonaInfo(persona.id)
+        mainDispatcher.scheduler.advanceUntilIdle()
+        viewModel.sendMessage("first")
+        mainDispatcher.scheduler.runCurrent()
+        selected = listOf(revised)
+        memoryChanges.value++
+        mainDispatcher.scheduler.runCurrent()
+        assertFalse(viewModel.isGenerating.value)
+        viewModel.sendMessage("resend")
+        mainDispatcher.scheduler.runCurrent()
+        assertTrue(viewModel.isGenerating.value)
+        rows.value = listOf(revised)
+        mainDispatcher.scheduler.runCurrent()
+        assertTrue(viewModel.isGenerating.value)
+        val sessions = argumentCaptor<GenerationSession>()
+        verify(hybridRepository, times(2)).streamResponse(any(), sessions.capture(), any(), any(), any(), any(), any())
+        val current = sessions.lastValue.prepareContext(Backend.MNN, "unused", emptyList())
+        assertTrue(current.userMessage.orEmpty().contains("new fact"))
+        assertFalse(current.userMessage.orEmpty().contains("old fact"))
+        viewModel.stopGenerating()
+        mainDispatcher.scheduler.runCurrent()
+    }
+
+    @Test
+    fun `a queued write notification predating send does not cancel the new request`() = runTest {
+        configureBaseMocks(flow { emit(delta("partial")); awaitCancellation() })
+        val viewModel = createViewModel()
+        viewModel.loadPersonaInfo(persona.id)
+        mainDispatcher.scheduler.advanceUntilIdle()
+        memoryChanges.value++
+        viewModel.sendMessage("new request")
+        mainDispatcher.scheduler.runCurrent()
+        assertTrue(viewModel.isGenerating.value)
+        viewModel.stopGenerating()
+        mainDispatcher.scheduler.runCurrent()
+    }
+
+    @Test
+    fun `deleting a cloud source outside the local top four stops active cloud generation`() = runTest {
+        configureBaseMocks(flow { emit(delta("partial")); awaitCancellation() })
+        val privateNotes = (1..4).map { index -> com.example.persona.domain.model.Memory(
+            "local-$index", "OFFLINE_USER", persona.id, com.example.persona.domain.model.MemoryType.FACT,
+            "local fact $index", createdAt = 1L, updatedAt = 10L + index) }
+        val shared = com.example.persona.domain.model.Memory("cloud-note", "OFFLINE_USER", persona.id,
+            com.example.persona.domain.model.MemoryType.FACT, "cloud fact", "source", 1L, 2L, cloudAllowed = true)
+        val rows = MutableStateFlow(privateNotes + shared)
+        var cloudRows = listOf(shared)
+        whenever(memoryRepository.observe(persona.id)).thenReturn(rows)
+        whenever(memoryRepository.selectForPrompt(persona.id, false)).thenReturn(privateNotes)
+        whenever(memoryRepository.selectForPrompt(persona.id, true)).thenAnswer { cloudRows }
+        val viewModel = createViewModel()
+        viewModel.loadPersonaInfo(persona.id)
+        mainDispatcher.scheduler.advanceUntilIdle()
+        viewModel.sendMessage("question")
+        mainDispatcher.scheduler.runCurrent()
+        val sessions = argumentCaptor<GenerationSession>()
+        verify(hybridRepository).streamResponse(any(), sessions.capture(), any(), any(), any(), any(), any())
+        val context = sessions.firstValue.prepareContext(Backend.CLOUD, "unused", emptyList())
+        assertTrue(context.userMessage.orEmpty().contains("cloud fact"))
+        cloudRows = emptyList()
+        rows.value = privateNotes
+        mainDispatcher.scheduler.runCurrent()
+        assertFalse(viewModel.isGenerating.value)
+        assertEquals(0L, memoryChanges.value)
+    }
+
+    @Test
+    fun `cloud evidence is revalidated after registering its source deletion watch`() = runTest {
+        configureBaseMocks(flow { emit(delta("partial")); awaitCancellation() })
+        val shared = com.example.persona.domain.model.Memory("cloud-note", "OFFLINE_USER", persona.id,
+            com.example.persona.domain.model.MemoryType.FACT, "cloud fact", "source", 1L, 2L, cloudAllowed = true)
+        var calls = 0
+        whenever(memoryRepository.selectForPrompt(persona.id, true)).thenAnswer {
+            calls++
+            if (calls == 1) listOf(shared) else emptyList<com.example.persona.domain.model.Memory>()
+        }
+        val viewModel = createViewModel()
+        viewModel.loadPersonaInfo(persona.id)
+        mainDispatcher.scheduler.advanceUntilIdle()
+        viewModel.sendMessage("question")
+        mainDispatcher.scheduler.runCurrent()
+        val sessions = argumentCaptor<GenerationSession>()
+        verify(hybridRepository).streamResponse(any(), sessions.capture(), any(), any(), any(), any(), any())
+        val result = runCatching { sessions.firstValue.prepareContext(Backend.CLOUD, "unused", emptyList()) }
+        assertTrue(result.exceptionOrNull() is kotlinx.coroutines.CancellationException)
+        viewModel.stopGenerating()
+        mainDispatcher.scheduler.runCurrent()
+    }
+
     private fun createViewModel(): ChatViewModel {
-        return ChatViewModel(hybridRepository, personaRepository, chatRepository, authManager)
+        return ChatViewModel(hybridRepository, personaRepository, chatRepository, authManager, memoryRepository)
     }
 
     private fun delta(text: String): GenerationEvent = GenerationEvent.Delta(text)

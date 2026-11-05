@@ -6,6 +6,7 @@ import com.example.persona.data.remote.dto.AuthSessionDto
 import com.example.persona.data.remote.dto.AuthUserDto
 import com.example.persona.data.remote.dto.ChangePasswordRequest
 import com.example.persona.data.remote.dto.DeleteAccountRequest
+import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.Header
@@ -23,7 +24,7 @@ interface AuthApi {
     suspend fun me(@Header("Authorization") authorization: String): AuthUserDto
 
     @POST("api/auth/logout")
-    suspend fun logout(@Header("Authorization") authorization: String)
+    suspend fun logout(@Header("Authorization") authorization: String): Response<Void>
 
     @POST("api/auth/change-password")
     suspend fun changePassword(
@@ -35,11 +36,11 @@ interface AuthApi {
     suspend fun deleteAccount(
         @Header("Authorization") authorization: String,
         @Body request: DeleteAccountRequest
-    )
+    ): Response<Void>
 
     @GET("api/auth/sessions")
     suspend fun getSessions(@Header("Authorization") authorization: String): List<AuthSessionInfoDto>
 
     @POST("api/auth/sessions/revoke-others")
-    suspend fun revokeOtherSessions(@Header("Authorization") authorization: String)
+    suspend fun revokeOtherSessions(@Header("Authorization") authorization: String): Response<Void>
 }

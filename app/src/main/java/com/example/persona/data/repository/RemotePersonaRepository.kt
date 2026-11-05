@@ -1,6 +1,7 @@
 package com.example.persona.data.repository
 
 import com.example.persona.data.remote.PersonaBackendApi
+import com.example.persona.data.remote.requireSuccessfulNoContent
 import com.example.persona.data.remote.dto.CreatePersonaRequest
 import com.example.persona.data.remote.dto.toDomain
 import com.example.persona.domain.model.Persona
@@ -54,6 +55,6 @@ class RemotePersonaRepository @Inject constructor(
     }
 
     override suspend fun deletePersona(id: String) {
-        api.deletePersona(id)
+        api.deletePersona(id).requireSuccessfulNoContent()
     }
 }

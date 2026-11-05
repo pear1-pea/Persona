@@ -10,10 +10,13 @@ import com.example.persona.data.local.MIGRATION_3_4
 import com.example.persona.data.local.MIGRATION_4_5
 import com.example.persona.data.local.MIGRATION_5_6
 import com.example.persona.data.local.MIGRATION_6_7
+import com.example.persona.data.local.MIGRATION_7_8
+import com.example.persona.data.local.installMemorySourceDeletionTrigger
 import com.example.persona.data.local.SEED_PERSONAS
 import com.example.persona.data.local.seedAvatarUrl
 import com.example.persona.data.local.seedPostImageUrl
 import com.example.persona.data.local.dao.MessageDao 
+import com.example.persona.data.local.dao.MemoryDao
 import com.example.persona.data.local.dao.PersonaDao
 import com.example.persona.data.local.entity.PersonaEntity
 import com.example.persona.data.local.entity.TraitEntity
@@ -31,6 +34,15 @@ import javax.inject.Singleton
 @Module
 @InstallIn(SingletonComponent::class)
 object DatabaseModule {
+    internal val memoryIntegrityCallback = object : RoomDatabase.Callback() {
+        override fun onCreate(db: SupportSQLiteDatabase) {
+            installMemorySourceDeletionTrigger(db)
+        }
+
+        override fun onOpen(db: SupportSQLiteDatabase) {
+            installMemorySourceDeletionTrigger(db)
+        }
+    }
 
     @Provides
     @Singleton
@@ -43,6 +55,7 @@ object DatabaseModule {
             AppDatabase::class.java,
             "persona_db_v2"
         )
+            .addCallback(memoryIntegrityCallback)
             // Callback for prepopulating data 
             .addCallback(object : RoomDatabase.Callback() {
                 override fun onCreate(db: SupportSQLiteDatabase) {
@@ -63,7 +76,8 @@ object DatabaseModule {
                 MIGRATION_3_4,
                 MIGRATION_4_5,
                 MIGRATION_5_6,
-                MIGRATION_6_7
+                MIGRATION_6_7,
+                MIGRATION_7_8
             )
             .build()
     }
@@ -77,6 +91,9 @@ object DatabaseModule {
     fun provideMessageDao(db: AppDatabase): MessageDao {
         return db.messageDao()
     }
+
+    @Provides
+    fun provideMemoryDao(db: AppDatabase): MemoryDao = db.memoryDao()
 
     private suspend fun prepopulateDatabase(dao: PersonaDao) {
         SEED_PERSONAS.forEach { seed ->
@@ -104,7 +121,7 @@ object DatabaseModule {
         }
     }
 
-    private fun recoverInterruptedMessages(db: SupportSQLiteDatabase) {
+    internal fun recoverInterruptedMessages(db: SupportSQLiteDatabase) {
         db.execSQL(
             """
             UPDATE messages

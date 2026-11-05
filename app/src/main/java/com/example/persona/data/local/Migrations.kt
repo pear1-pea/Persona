@@ -77,3 +77,51 @@ val MIGRATION_6_7 = object : Migration(6, 7) {
         }
     }
 }
+
+val MIGRATION_7_8 = object : Migration(7, 8) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE messages ADD COLUMN localOnly INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE messages ADD COLUMN excludeFromHistory INTEGER NOT NULL DEFAULT 0")
+        // Legacy rows have no recorded consent for replay into a new prompt.
+        db.execSQL("UPDATE messages SET excludeFromHistory = 1")
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS memories (
+                id TEXT NOT NULL PRIMARY KEY,
+                ownerId TEXT NOT NULL,
+                personaId TEXT,
+                type TEXT NOT NULL,
+                content TEXT NOT NULL,
+                sourceMessageId TEXT,
+                createdAt INTEGER NOT NULL,
+                updatedAt INTEGER NOT NULL,
+                expiresAt INTEGER,
+                cloudAllowed INTEGER NOT NULL DEFAULT 0,
+                revision INTEGER NOT NULL DEFAULT 1,
+                deleted INTEGER NOT NULL DEFAULT 0
+            )
+            """.trimIndent()
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS index_memories_ownerId_personaId_deleted_updatedAt " +
+                "ON memories(ownerId, personaId, deleted, updatedAt)"
+        )
+        installMemorySourceDeletionTrigger(db)
+    }
+}
+
+internal fun installMemorySourceDeletionTrigger(db: SupportSQLiteDatabase) {
+    db.execSQL(
+        """
+        CREATE TRIGGER IF NOT EXISTS tombstone_memories_before_message_delete
+        BEFORE DELETE ON messages
+        BEGIN
+            UPDATE memories
+            SET content = '', sourceMessageId = NULL, cloudAllowed = 0,
+                deleted = 1, revision = revision + 1,
+                updatedAt = MAX(updatedAt, CAST(strftime('%s', 'now') AS INTEGER) * 1000)
+            WHERE sourceMessageId = OLD.id AND ownerId = OLD.ownerId AND deleted = 0;
+        END
+        """.trimIndent()
+    )
+}

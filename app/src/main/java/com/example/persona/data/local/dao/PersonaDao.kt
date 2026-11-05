@@ -76,9 +76,13 @@ interface PersonaDao {
     @Query("DELETE FROM messages WHERE ownerId = :ownerId")
     suspend fun deleteMessagesByOwner(ownerId: String)
 
+    @Query("DELETE FROM memories WHERE ownerId = :ownerId")
+    suspend fun deleteMemoriesByOwner(ownerId: String)
+
     @Transaction
     suspend fun deleteAccountData(ownerId: String) {
         require(ownerId != "OFFLINE_USER" && ownerId != "system")
+        deleteMemoriesByOwner(ownerId)
         deleteMessagesByOwner(ownerId)
         deleteUnreferencedPersonasByCreator(ownerId)
     }

@@ -57,13 +57,19 @@ class FeedFragment : Fragment() {
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.uiState.collect { list ->
-                    adapter.submitList(list)
+                    // Null clears synchronously instead of waiting for an asynchronous diff.
+                    adapter.submitList(list.takeIf { it.isNotEmpty() })
                 }
             }
         }
 
         observeErrorEvents(viewModel, binding.root)
 
+    }
+
+    override fun onResume() {
+        super.onResume()
+        viewModel.refresh()
     }
 
     override fun onDestroyView() {

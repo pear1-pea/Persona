@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="creation_create">Create Persona</string>
+    <string name="creation_save_changes">Save changes</string>
+    <string name="creation_saving">Saving…</string>
+    <string name="creation_generate">✨ AI Auto-Generate</string>
+    <string name="creation_generating">Generating…</string>
+    <string name="creation_delete">Delete Persona</string>
+    <string name="creation_deleting">Deleting…</string>
+    <string name="creation_delete_confirmation">This cannot be undone.</string>
+    <string name="creation_cancel">Cancel</string>
+    <string name="creation_invalid_profile">Use a name of 1–120 characters, a story of 1–12000 characters, and 1–20 traits of 1–80 characters each. AI output that does not meet these limits is discarded.</string>
+    <string name="creation_generation_failed">Could not generate a Persona. Check your connection and sign-in, then try again.</string>
+    <string name="creation_generation_timeout">Generation timed out. Your draft is unchanged. Try again.</string>
+    <string name="creation_save_failed">Could not save this Persona. Check your connection and sign-in, then try again.</string>
+    <string name="creation_delete_failed">Could not delete this Persona. Check your connection and sign-in, then try again.</string>
+    <string-array name="creation_default_traits">
+        <item>Witty</item>
+        <item>Mysterious</item>
+        <item>Kind</item>
+        <item>Brave</item>
+        <item>Romantic</item>
+        <item>Stoic</item>
+        <item>Analytical</item>
+    </string-array>
+</resources>

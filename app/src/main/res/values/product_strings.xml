@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="product_all_traits">All traits</string>
+    <string name="product_start_chat">Start chat</string>
+    <string name="product_chat_with_persona">Chat with %1$s</string>
+    <string name="product_persona_counts">%1$d Total  |  %2$d Public  |  %3$d Private</string>
+    <string name="product_my_personas">My Personas</string>
+    <string name="product_create_persona">Create New Persona</string>
+</resources>

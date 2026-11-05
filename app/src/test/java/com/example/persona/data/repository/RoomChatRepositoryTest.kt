@@ -29,6 +29,15 @@ import org.junit.Assert.assertTrue
 
 class RoomChatRepositoryTest {
 
+    @Test
+    fun `source lookup uses the captured owner rather than a recent history window`() = runTest {
+        whenever(messageDao.getMessageById("old-source", "me"))
+            .thenReturn(MessageEntity("old-source", "other-persona", "me", "old fact", true, 1L))
+        assertEquals("old fact", repo.getMessageById("old-source")?.content)
+        verify(messageDao).getMessageById("old-source", "me")
+        assertEquals(null, repo.getMessageById("foreign-source"))
+    }
+
     private val messageDao: MessageDao = mock()
     private val tokenStore: SessionTokenStore = mock()
     private val authApi: AuthApi = mock()

@@ -25,6 +25,12 @@ class RoomChatRepository @Inject constructor(
     private val messageDao: MessageDao,
     private val authManager: AuthManager
 ) : ChatRepository {
+    override suspend fun getMessageById(id: String): Message? {
+        val identity = authManager.requestIdentity()
+        return messageDao.getMessageById(id, identity.ownerId)?.toDomain()
+            .also { authManager.requireIdentity(identity) }
+    }
+
     override fun getMessagesStream(personaId: String): Flow<PagingData<Message>> {
         val identity = authManager.identity.value
         return channelFlow {
