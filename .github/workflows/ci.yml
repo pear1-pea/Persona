@@ -42,7 +42,7 @@ jobs:
         run: |
           mkdir -p build/ci/android
           chmod +x gradlew
-          ./gradlew assembleDebug testDebugUnitTest --stacktrace --console=plain 2>&1 | tee build/ci/android/gradle.log
+          ./gradlew assembleDebug assembleDebugAndroidTest testDebugUnitTest --stacktrace --console=plain 2>&1 | tee build/ci/android/gradle.log
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -215,7 +215,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Path build/ci/windows -Force | Out-Null
           $failed = $false
-          foreach ($task in @('assembleDebug', 'testDebugUnitTest')) {
+          foreach ($task in @('assembleDebug', 'assembleDebugAndroidTest', 'testDebugUnitTest')) {
             $LASTEXITCODE = $null
             try {
               $ErrorActionPreference = 'Continue'

@@ -8,6 +8,7 @@ Index of all project documentation. The agent entry point is
 - [README](../README.md) — product overview, features, and quick start
 - [Backend README](../backend/README.md) — API, database, limits, deployment
 - [Long-term optimization plan](long-term-optimization-plan.md) — phased reliability, Persona, memory, and evaluation roadmap
+- [P3 TODO](p3-todo.md) — accepted decisions, implementation order, and verification gates
 
 ## Development (agent-focused)
 
@@ -32,6 +33,8 @@ Index of all project documentation. The agent entry point is
 - P2 component adapter Windows/device acceptance (14 pass; 12 unsupported): [qa/p2-adapter-windows-status-2026-10-30.md](qa/p2-adapter-windows-status-2026-10-30.md)
 - P2 request lifecycle acceptance (20 pass; 6 unsupported; controlled transports): [qa/p2-lifecycle-status-2026-10-30.md](qa/p2-lifecycle-status-2026-10-30.md)
 - P2 real-model/UI/backend device evidence from 2026-10-30: [qa/p2-closure-status-2026-10-30.md](qa/p2-closure-status-2026-10-30.md)
+- P3 Windows/device engineering acceptance (model extraction experimental): [qa/p3-status-2026-11-05.md](qa/p3-status-2026-11-05.md)
+- P3 Mac implementation and verification: [qa/p3-mac-status-2026-11-05.md](qa/p3-mac-status-2026-11-05.md)
 - P2 human results and Windows/Mac integration record: [qa/p2-review-status-2026-11-04.md](qa/p2-review-status-2026-11-04.md)
 - Chinese personality/memory evaluation: [../tools/persona-eval/README.md](../tools/persona-eval/README.md)
 - Native/device plan: [qa/native-test-plan.md](qa/native-test-plan.md)

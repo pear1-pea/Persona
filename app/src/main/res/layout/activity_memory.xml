@@ -114,6 +114,12 @@
             android:visibility="gone" />
 
         <Button
+            android:id="@+id/btnCuration"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/curation_open" />
+
+        <Button
             android:id="@+id/btnAdd"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -220,6 +226,26 @@
                 android:minHeight="48dp"
                 android:saveEnabled="false"
                 android:text="@string/memory_cloud_option" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/curation_expiry_hint" />
+
+            <CheckBox
+                android:id="@+id/checkPermanent"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:saveEnabled="false"
+                android:text="@string/curation_permanent" />
+
+            <EditText
+                android:id="@+id/etExpiry"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="@string/curation_expiry"
+                android:inputType="text"
+                android:saveEnabled="false" />
 
             <TextView
                 android:id="@+id/tvManualSource"

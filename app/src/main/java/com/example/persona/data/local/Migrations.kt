@@ -125,3 +125,82 @@ internal fun installMemorySourceDeletionTrigger(db: SupportSQLiteDatabase) {
         """.trimIndent()
     )
 }
+
+val MIGRATION_8_9 = object : Migration(8, 9) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS memory_candidates (
+                id TEXT NOT NULL PRIMARY KEY, ownerId TEXT NOT NULL, personaId TEXT NOT NULL,
+                sourceMessageId TEXT NOT NULL, sourceHash TEXT NOT NULL, content TEXT NOT NULL,
+                type TEXT NOT NULL, topicKey TEXT NOT NULL, extractorVersion TEXT NOT NULL,
+                manual INTEGER NOT NULL, status TEXT NOT NULL, memoryId TEXT, createdAt INTEGER NOT NULL
+            )
+        """.trimIndent())
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_memory_candidates_ownerId_personaId_status ON memory_candidates(ownerId, personaId, status)")
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS memory_preferences (
+                ownerId TEXT NOT NULL PRIMARY KEY, enabled INTEGER NOT NULL,
+                cloudExtractionAllowed INTEGER NOT NULL, revision INTEGER NOT NULL
+            )
+        """.trimIndent())
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS memory_summary_sources (
+                memoryId TEXT NOT NULL, sourceMessageId TEXT NOT NULL,
+                ownerId TEXT NOT NULL, sourceHash TEXT NOT NULL,
+                PRIMARY KEY(memoryId, sourceMessageId)
+            )
+        """.trimIndent())
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_memory_summary_sources_ownerId_sourceMessageId ON memory_summary_sources(ownerId, sourceMessageId)")
+        installMemoryCurationTriggers(db)
+    }
+}
+
+internal fun installMemoryCurationTriggers(db: SupportSQLiteDatabase) {
+    for (event in listOf("DELETE", "UPDATE OF content, status, isFromUser, localOnly, excludeFromHistory")) {
+        val deleting = event == "DELETE"
+        val name = if (deleting) "delete" else "update"
+        val condition = if (deleting) "" else """
+            WHEN OLD.content <> NEW.content OR OLD.status <> NEW.status
+              OR OLD.isFromUser <> NEW.isFromUser OR OLD.localOnly <> NEW.localOnly
+              OR OLD.excludeFromHistory <> NEW.excludeFromHistory
+        """.trimIndent()
+        db.execSQL("""
+            CREATE TRIGGER IF NOT EXISTS invalidate_curated_memory_before_message_$name
+            BEFORE $event ON messages $condition
+            BEGIN
+                UPDATE memory_candidates SET status = 'INVALID', content = ''
+                WHERE ownerId = OLD.ownerId AND sourceMessageId = OLD.id AND status IN ('PENDING', 'RUNNING')
+                  ${if (deleting) "" else "AND (manual = 0 OR OLD.content <> NEW.content OR OLD.status <> NEW.status OR OLD.isFromUser <> NEW.isFromUser OR OLD.localOnly <> NEW.localOnly)"};
+                UPDATE memories SET content = '', sourceMessageId = NULL, cloudAllowed = 0,
+                    deleted = 1, revision = revision + 1
+                WHERE ownerId = OLD.ownerId AND deleted = 0 AND id IN (
+                    SELECT memoryId FROM memory_summary_sources
+                    WHERE ownerId = OLD.ownerId AND sourceMessageId = OLD.id
+                );
+                DELETE FROM memory_summary_sources
+                WHERE ownerId = OLD.ownerId AND sourceMessageId = OLD.id;
+            END
+        """.trimIndent())
+    }
+    db.execSQL("""
+        CREATE TRIGGER IF NOT EXISTS invalidate_curated_memory_after_tombstone
+        AFTER UPDATE OF deleted ON memories WHEN NEW.deleted = 1
+        BEGIN
+            UPDATE memory_candidates SET status = 'INVALID', content = ''
+            WHERE ownerId = NEW.ownerId AND (memoryId = NEW.id
+                OR (status IN ('PENDING', 'RUNNING') AND
+                    (sourceMessageId = OLD.sourceMessageId OR sourceMessageId IN (
+                        SELECT sourceMessageId FROM memory_summary_sources
+                        WHERE memoryId = NEW.id AND ownerId = NEW.ownerId
+                    ))));
+            DELETE FROM memory_summary_sources WHERE ownerId = NEW.ownerId AND memoryId = NEW.id;
+        END
+    """.trimIndent())
+    db.execSQL("""
+        CREATE TRIGGER IF NOT EXISTS cleanup_summary_sources_after_memory_delete
+        AFTER DELETE ON memories
+        BEGIN
+            DELETE FROM memory_summary_sources WHERE ownerId = OLD.ownerId AND memoryId = OLD.id;
+        END
+    """.trimIndent())
+}

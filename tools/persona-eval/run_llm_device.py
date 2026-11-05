@@ -121,7 +121,7 @@ def run(args, repo=REPO_ROOT):
             "source_revision": data["implementation_revision"], "models": MODEL_MANIFESTS,
             "parameters": {"temperature": 0.6, "topP": 0.8, "maxTokens": 256, "seed": None},
             "prompt": "production-ChatViewModel-persona-json-v2", "context_assembly": "quoted-user-facts-v5",
-            "retrieval": "latest-authorized-v1-top4-1200utf16", "repetitions": 3,
+            "retrieval": "memory-keyword-v2-top4-1200utf16", "repetitions": 3,
             "other_sampler_parameters": "model config and pinned runtime defaults",
             "actual_cloud": False}, indent=2) + "\n", encoding="utf-8")
         for index, (package, apk) in enumerate(apks.items()):

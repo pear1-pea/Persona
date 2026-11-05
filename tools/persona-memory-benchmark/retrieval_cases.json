@@ -1,0 +1,231 @@
+[
+  {
+    "id": "chinese-two-character-old",
+    "query": "音乐",
+    "expected": [
+      "old"
+    ],
+    "rows": [
+      {
+        "id": "n1",
+        "content": "今天晴朗",
+        "updatedAt": 9
+      },
+      {
+        "id": "n2",
+        "content": "喜欢旅行",
+        "updatedAt": 8
+      },
+      {
+        "id": "n3",
+        "content": "住在上海",
+        "updatedAt": 7
+      },
+      {
+        "id": "n4",
+        "content": "周末跑步",
+        "updatedAt": 6
+      },
+      {
+        "id": "old",
+        "content": "我喜欢音乐",
+        "updatedAt": 1
+      }
+    ]
+  },
+  {
+    "id": "alias",
+    "query": "coffee",
+    "expected": [
+      "coffee"
+    ],
+    "rows": [
+      {
+        "id": "weather",
+        "content": "今天晴朗",
+        "updatedAt": 5
+      },
+      {
+        "id": "coffee",
+        "content": "我不喝咖啡",
+        "updatedAt": 1
+      }
+    ]
+  },
+  {
+    "id": "mixed-language",
+    "query": "KOTLIN 开发",
+    "expected": [
+      "code"
+    ],
+    "rows": [
+      {
+        "id": "noise",
+        "content": "我喜欢电影",
+        "updatedAt": 9
+      },
+      {
+        "id": "code",
+        "content": "我用 Kotlin 写 Android",
+        "updatedAt": 1
+      }
+    ]
+  },
+  {
+    "id": "negative-evidence",
+    "query": "喜欢咖啡吗",
+    "expected": [
+      "denied"
+    ],
+    "rows": [
+      {
+        "id": "noise",
+        "content": "我喜欢旅行",
+        "updatedAt": 9
+      },
+      {
+        "id": "denied",
+        "content": "我不喜欢咖啡",
+        "updatedAt": 1
+      }
+    ]
+  },
+  {
+    "id": "no-match",
+    "query": "天文",
+    "expected": [],
+    "rows": [
+      {
+        "id": "noise",
+        "content": "我喜欢电影",
+        "updatedAt": 9
+      }
+    ]
+  },
+  {
+    "id": "generic-words",
+    "query": "你还记得我喜欢什么",
+    "expected": [],
+    "rows": [
+      {
+        "id": "noise",
+        "content": "我喜欢旅行",
+        "updatedAt": 9
+      }
+    ]
+  },
+  {
+    "id": "cloud-permissions",
+    "query": "花生",
+    "cloud": true,
+    "expected": [
+      "shared"
+    ],
+    "rows": [
+      {
+        "id": "private",
+        "content": "花生",
+        "updatedAt": 9
+      },
+      {
+        "id": "foreign",
+        "content": "花生",
+        "updatedAt": 9,
+        "ownerId": "other",
+        "cloudAllowed": true
+      },
+      {
+        "id": "other-persona",
+        "content": "花生",
+        "updatedAt": 9,
+        "personaId": "other",
+        "cloudAllowed": true
+      },
+      {
+        "id": "expired",
+        "content": "花生",
+        "updatedAt": 9,
+        "expiresAt": 1,
+        "cloudAllowed": true
+      },
+      {
+        "id": "deleted",
+        "content": "花生",
+        "updatedAt": 9,
+        "deleted": true,
+        "cloudAllowed": true
+      },
+      {
+        "id": "summary-local",
+        "content": "花生",
+        "updatedAt": 9
+      },
+      {
+        "id": "shared",
+        "content": "我对花生过敏",
+        "updatedAt": 1,
+        "personaId": null,
+        "cloudAllowed": true
+      }
+    ]
+  },
+  {
+    "id": "stable-ties",
+    "query": "咖啡",
+    "expected": [
+      "a",
+      "b"
+    ],
+    "rows": [
+      {
+        "id": "b",
+        "content": "咖啡",
+        "updatedAt": 1
+      },
+      {
+        "id": "a",
+        "content": "咖啡",
+        "updatedAt": 1
+      }
+    ]
+  },
+  {
+    "id": "blank-legacy",
+    "query": "",
+    "expected": [
+      "new",
+      "old"
+    ],
+    "rows": [
+      {
+        "id": "old",
+        "content": "我不吃花生",
+        "updatedAt": 1
+      },
+      {
+        "id": "new",
+        "content": "喜欢音乐",
+        "updatedAt": 9
+      }
+    ]
+  },
+  {
+    "id": "personal-tea-question",
+    "query": "根据你当前可用的信息，我最喜欢喝什么茶？如果不知道就直接说不知道。一句话回答。",
+    "expected": [
+      "tea"
+    ],
+    "rows": [
+      {
+        "id": "weather",
+        "content": "今天晴朗",
+        "updatedAt": 10
+      },
+      {
+        "id": "tea",
+        "content": "用户明确保存：最喜欢喝桂花茶。",
+        "updatedAt": 1
+      }
+    ]
+  }
+]

@@ -125,7 +125,7 @@ class M5LlmBatchInstrumentedTest {
                     "runtime" to "MNN-3.6.1-d407447ed56c4121a11ccbd266dc184ca1ead0c2", "quantization" to "int4"),
                     "prompt" to "production-ChatViewModel-persona-json-v2",
                     "parameters" to GenerationParams(), "repetitions_per_case" to 3,
-                    "retrieval" to "latest-authorized-v1-top4-1200utf16",
+                    "retrieval" to (com.example.persona.core.memory.MemoryRanker.VERSION + "-top4-1200utf16"),
                     "context_assembly" to MemoryPrompt.VERSION,
                     "other_sampler_fields" to "model config plus pinned runtime defaults; not overridden")
                 checkpoint()

@@ -290,6 +290,9 @@ P2 工程验收要求用户可完成创建、发现、聊天与恢复流程，�
 
 ## 9. P3：受控自动记忆与混合检索
 
+2026-11-05 已确认产品决策，执行顺序与勾选状态见 [P3 待办](p3-todo.md)。
+Mac 实现及可执行检查见 [本轮结果](qa/p3-mac-status-2026-11-05.md)，设备验收单独推进。
+
 显式记忆已证明有用后，再逐步引入以下能力，每步与前一基线比较。
 
 | 子阶段 | 交付 | 主要验证 |
@@ -398,3 +401,13 @@ Backend 补齐请求关联、允许公开的错误码和结构化诊断，避免
 - [模型打包工具](../tools/model-packager/README.md)、[Backend 配置与权限](../backend/README.md)。
 - [MNN 3.6.1 llm.cpp](https://github.com/alibaba/MNN/blob/3.6.1/transformers/llm/engine/src/llm.cpp)、[sampler.cpp](https://github.com/alibaba/MNN/blob/3.6.1/transformers/llm/engine/src/sampler.cpp)、[运行配置](https://github.com/alibaba/MNN/blob/3.6.1/transformers/llm/engine/src/llmconfig.hpp)：配置时机、缓存与阶段指标的固定版本依据。
 - [Markwon 4.6.2 图片加载](https://github.com/noties/Markwon/blob/v4.6.2/markwon-image-coil/src/main/java/io/noties/markwon/image/coil/CoilImagesPlugin.java)：生成内容的图片请求行为依据。
+
+
+## P3 实施回执，2026-11-05
+
+P3 已完成候选确认、关键词相关性检索和可追溯摘录摘要的工程验收。
+Windows 完整构建与 514 项 JVM 测试通过，最终 40 项设备集中回归通过。
+真实 MNN 抢占、进程死亡恢复、记忆保存/修订/删除问答和独立云端提取授权另有专项证据。
+本地模型固定样本暴露解析和语义缺陷，提取入口限定 Debug 实验，所有候选仍须明确确认。
+现阶段不启动 Embedding、后台持续整理或大规模索引，远程 CI 由 [P3 PR #7](https://github.com/pear1-pea/Persona/pull/7/checks) 记录，合入前确认最终检查通过。
+详细范围、资源测量和失败记录见 [P3 集中验收](qa/p3-status-2026-11-05.md)。

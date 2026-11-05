@@ -3,6 +3,8 @@ package com.example.persona.di
 import com.example.persona.core.ai.LocalAiEngine
 import com.example.persona.core.ai.mnn.MnnLocalAiEngine
 import com.example.persona.data.repository.RoomChatRepository
+import com.example.persona.data.repository.RoomMemoryCurationRepository
+import com.example.persona.domain.repository.MemoryCurationRepository
 import com.example.persona.data.repository.RoomMemoryRepository
 import com.example.persona.domain.repository.MemoryRepository
 import com.example.persona.data.repository.SwitchingPersonaRepository
@@ -17,6 +19,10 @@ import javax.inject.Singleton
 @Module
 @InstallIn(SingletonComponent::class)
 abstract class RepositoryModule {
+
+    @Binds
+    @Singleton
+    abstract fun bindMemoryCurationRepository(impl: RoomMemoryCurationRepository): MemoryCurationRepository
 
     @Binds
     @Singleton

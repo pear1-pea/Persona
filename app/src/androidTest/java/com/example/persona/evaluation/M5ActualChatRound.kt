@@ -72,7 +72,7 @@ internal class M5ActualChatRound(private val instrumentation: Instrumentation) {
             check(auth.identity.value.ownerId == owner)
             val chat = RoomChatRepository(current.messageDao(), auth)
             val memories = RoomMemoryRepository(current.memoryDao(), auth)
-            val evidence = memories.selectForPrompt(case.persona, case.cloud)
+            val evidence = memories.selectForPrompt(case.persona, case.cloud, case.messages.last().second.trim())
             val refs = snapshots.associate { (it.physicalId to it.revision) to it.ref }
             val authorized = evidence.map { checkNotNull(refs[it.id to it.revision]) }
             lateinit var model: ChatViewModel

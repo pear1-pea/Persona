@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Memory curation uses explicit, independent consent for cloud extraction. -->
+    <string name="curation_title">候选与摘要</string>
+    <string name="curation_persona_title">%1$s · 候选与摘要</string>
+    <string name="curation_open">候选与摘要</string>
+    <string name="curation_policy">总开关默认关闭。手选原消息后点击提取，只生成候选，编辑并确认后才保存记忆。摘要仅在本地生成。</string>
+    <string name="curation_enable">启用记忆候选与摘要</string>
+    <string name="curation_cloud_notice">云端提取会将下方选中的一条用户原消息（完整原文）发送到后端云模型，可能产生模型调用费用。授权仅允许提取，每次仍需点击“云端提取”。候选记忆是否允许用于云端对话由独立选项控制。本地专用消息无法发送云端。</string>
+    <string name="curation_cloud_consent">独立授权云端提取并知晓费用</string>
+    <string name="curation_messages">手选一条消息（最近 100 条中的可用用户消息，包含传入的历史消息）</string>
+    <string name="curation_message">%1$s\n%2$s</string>
+    <string name="curation_no_messages">没有可用的用户消息。可从聊天消息菜单进入。</string>
+    <string name="curation_selected">从所选消息生成候选</string>
+    <string name="curation_local">本地模型提取所选消息（实验）</string>
+    <string name="curation_cloud">云端提取所选消息（可能收费）</string>
+    <string name="curation_cancel_extraction">取消提取</string>
+    <string name="curation_candidates">待确认候选</string>
+    <string name="curation_empty">暂无候选</string>
+    <string name="curation_candidate">%1$s\n%2$s\n提取方式 %3$s</string>
+    <string name="curation_method_rule">规则识别</string>
+    <string name="curation_method_model">模型建议，请核对原文</string>
+    <string name="curation_edit">编辑并选择保存方式</string>
+    <string name="curation_editor">编辑候选</string>
+    <string name="curation_source">查看来源原文</string>
+    <string name="curation_ignore">忽略</string>
+    <string name="curation_confirm">确认保存候选</string>
+    <string name="curation_expiry">到期日期 YYYY-MM-DD</string>
+    <string name="curation_expiry_hint">选择永久，或输入未来 ISO 日期 YYYY-MM-DD。到期时刻为该日期的 UTC 零点。取消永久选择后默认明天。</string>
+    <string name="curation_permanent">永久保留</string>
+    <string name="curation_error_expiry">请输入有效的未来日期 YYYY-MM-DD，或选择永久</string>
+    <string name="curation_conflicts">这些记忆可能相关。请选择新建，或用本次内容更新其中一条。保存前会检查已有内容是否发生变化。</string>
+    <string name="curation_create_new">新建独立记忆</string>
+    <string name="curation_replace">更新这条已保存记忆\n%3$s</string>
+    <string name="curation_retry_conflicts">重新载入冲突（重置当前编辑）</string>
+    <string name="curation_summarize">生成本地摘要</string>
+    <string name="curation_summaries">本地摘要</string>
+    <string name="curation_all_sources">查看全部来源原消息</string>
+    <string name="curation_no_summary">暂无可显示的摘要</string>
+    <string name="curation_busy">正在处理…</string>
+    <string name="curation_ready">请选择消息或候选</string>
+    <string name="curation_error_load">载入失败，请重试</string>
+    <string name="curation_error_operation">操作失败。请检查授权、来源或模型是否可用；若已有内容发生变化，请重新选择保存方式。编辑内容已保留。</string>
+    <string name="curation_error_draft">请检查内容、到期日期并明确选择新建或更新记忆</string>
+</resources>

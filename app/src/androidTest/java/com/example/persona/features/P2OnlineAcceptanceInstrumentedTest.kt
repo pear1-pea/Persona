@@ -44,6 +44,7 @@ import com.google.gson.GsonBuilder
 import java.io.File
 import java.util.UUID
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.first
 import org.junit.Assert.*
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -148,7 +149,15 @@ class P2OnlineAcceptanceInstrumentedTest {
 
             val client = NetworkModule.provideOkHttpClient(dashboard.authManager, config)
             val sse = NetworkModule.provideSseOkHttpClient(client)
-            val api = NetworkModule.provideCloudChatApi(NetworkModule.provideSseRetrofit(sse, config))
+            val transport = NetworkModule.provideCloudChatApi(NetworkModule.provideSseRetrofit(sse, config))
+            val cloudCalls = java.util.concurrent.atomic.AtomicInteger()
+            val api = object : com.example.persona.data.remote.CloudChatApi by transport {
+                override fun streamChat(request: com.example.persona.data.remote.dto.ChatRequest,
+                    authorization: String?): retrofit2.Call<okhttp3.ResponseBody> {
+                    cloudCalls.incrementAndGet()
+                    return transport.streamChat(request, authorization)
+                }
+            }
             val cloud = CloudChatRepository(api, config, dashboard.authManager)
             val validator = LocalModelValidator(AndroidSymlinkChecker)
             val installer = ModelPackageInstaller(context, validator, AndroidSymlinkChecker)
@@ -168,6 +177,36 @@ class P2OnlineAcceptanceInstrumentedTest {
             try {
                 val ownerId = dashboard.authManager.identity.value.ownerId
                 val personaId = checkNotNull(chatModel.currentPersona.value).id
+                val memoryRepository = RoomMemoryRepository(cleanupDatabase.memoryDao(), dashboard.authManager)
+                val curator = com.example.persona.data.repository.RoomMemoryCurationRepository(
+                    cleanupDatabase, dashboard.authManager, memoryRepository, repository)
+                val sourceId = "p3-cloud-source-${UUID.randomUUID()}"
+                cleanupDatabase.messageDao().insertMessage(com.example.persona.data.local.entity.MessageEntity(
+                    sourceId, personaId, ownerId, "我喜欢简短的技术解释。", true, System.currentTimeMillis()))
+                curator.configure(true, false)
+                val before = cloudCalls.get()
+                check(runCatching { curator.proposeWithModel(personaId, sourceId, true) }.isFailure)
+                check(cloudCalls.get() == before)
+                curator.configure(true, true)
+                val started = android.os.SystemClock.elapsedRealtime()
+                val extraction = runCatching { curator.proposeWithModel(personaId, sourceId, true) }
+                check(cloudCalls.get() == before + 1)
+                val candidates = curator.observe(personaId).first()
+                check(candidates.all { "我喜欢简短的技术解释。".contains(it.content) })
+                if (candidates.isNotEmpty()) {
+                    val saved = curator.confirm(candidates.first().id, candidates.first().content, candidates.first().type)
+                    check(!saved.cloudAllowed && saved.ownerId == ownerId)
+                    memoryRepository.delete(saved.id, saved.revision)
+                }
+                curator.configure(true, false)
+                check(runCatching { curator.proposeWithModel(personaId, sourceId, true) }.isFailure)
+                check(cloudCalls.get() == before + 1)
+                report["p3_real_cloud_extraction"] = mapOf(
+                    "calls" to 1, "status" to if (extraction.isSuccess) "completed" else "rejected",
+                    "failure_class" to extraction.exceptionOrNull()?.javaClass?.simpleName,
+                    "candidates" to candidates.map { mapOf("type" to it.type.name, "content" to it.content) },
+                    "duration_ms" to (android.os.SystemClock.elapsedRealtime() - started),
+                    "independent_authorization_and_revocation" to "passed")
                 val memoryId = "p2-delete-${UUID.randomUUID()}"
                 val otherId = "$memoryId-other"
                 val now = System.currentTimeMillis()

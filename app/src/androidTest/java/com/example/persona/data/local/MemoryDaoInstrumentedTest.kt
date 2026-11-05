@@ -49,6 +49,15 @@ class MemoryDaoInstrumentedTest {
     }
 
     @Test
+    fun promptCandidatesIncludeOldRowsBeyondThePreviousFourRowLimit() = runBlocking {
+        for (index in 1..600) dao.insert(memory("recent-$index").copy(updatedAt = 100))
+        dao.insert(memory("old-relevant").copy(content = "我不吃花生", updatedAt = 1))
+        val rows = dao.selectForPrompt("owner", "p", false, 10)
+        assertEquals(601, rows.size)
+        assertEquals("old-relevant", rows.last().id)
+    }
+
+    @Test
     fun saveAndDeleteUseRevisionCasAndNeverReplaceAnotherOwnersId() = runBlocking {
         dao.saveMemory(memory("id"), null)
         val edited = dao.saveMemory(memory("id").copy(content = "edited", createdAt = 999, updatedAt = 3), 1)
