@@ -1,6 +1,8 @@
 package com.example.persona.core.ai.mnn
 
+import com.example.persona.BuildConfig
 import com.example.persona.core.ai.GenerationParams
+import com.example.persona.core.ai.prompt.NativeMessage
 import com.example.persona.core.ai.prompt.NativePromptPayload
 import java.util.concurrent.locks.ReentrantReadWriteLock
 
@@ -143,6 +145,36 @@ internal class NativeMnnSession : NativeMnnRuntimeSession {
         }
     }
 
+    internal fun inspectChatPromptForVerification(messages: List<NativeMessage>): IntArray {
+        check(BuildConfig.DEBUG) { "MNN chat prompt verification requires a debug build" }
+        val invalidInput = "Invalid MNN chat prompt verification input"
+        require(messages.size in 1..128) { invalidInput }
+        var totalUtf16 = 0L
+        val contents = Array(messages.size) { "" }
+        val roles = Array(messages.size) { index ->
+            val message = messages[index]
+            require(message.role == "system" || message.role == "user" || message.role == "assistant") {
+                invalidInput
+            }
+            require(message.content.isNotEmpty()) { invalidInput }
+            totalUtf16 += message.role.length.toLong() + message.content.length
+            require(totalUtf16 <= 16_384) { invalidInput }
+            contents[index] = message.content
+            message.role
+        }
+        lifecycleLock.readLock().lock()
+        try {
+            val nativeHandle = handle
+            check(nativeHandle != 0L) { "MNN session has not been loaded" }
+            val failure = "MNN chat prompt verification failed"
+            val ids = checkNotNull(nativeInspectChatPrompt(nativeHandle, roles, contents)) { failure }
+            check(ids.size in 1..32_768) { failure }
+            return ids
+        } finally {
+            lifecycleLock.readLock().unlock()
+        }
+    }
+
     // This advances the active sampler RNG; use only in isolated runtime tests.
     internal fun sampleForVerification(draws: Int = 4096): IntArray {
         require(draws in 1..65536)
@@ -225,6 +257,12 @@ internal class NativeMnnSession : NativeMnnRuntimeSession {
     )
 
     private external fun nativeStop(handle: Long)
+
+    private external fun nativeInspectChatPrompt(
+        handle: Long,
+        roles: Array<String>,
+        contents: Array<String>
+    ): IntArray?
 
     private external fun nativeSampleForVerification(handle: Long, draws: Int): IntArray?
 

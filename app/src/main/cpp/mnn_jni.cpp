@@ -410,6 +410,38 @@ MNN::Transformer::ChatMessages toChatMessages(
     return messages;
 }
 
+bool readVerificationString(
+    JNIEnv* env, jobjectArray values, jsize index, jsize& remainingUtf16, std::string& text
+) {
+    auto value = static_cast<jstring>(env->GetObjectArrayElement(values, index));
+    if (value == nullptr || env->ExceptionCheck()) {
+        if (value != nullptr) env->DeleteLocalRef(value);
+        return false;
+    }
+    const auto length = env->GetStringLength(value);
+    if (env->ExceptionCheck() || length <= 0 || length > remainingUtf16) {
+        env->DeleteLocalRef(value);
+        return false;
+    }
+    const auto* chars = env->GetStringChars(value, nullptr);
+    if (chars == nullptr || env->ExceptionCheck()) {
+        if (chars != nullptr) env->ReleaseStringChars(value, chars);
+        env->DeleteLocalRef(value);
+        return false;
+    }
+    try {
+        text = utf16ToUtf8(chars, length);
+    } catch (...) {
+        env->ReleaseStringChars(value, chars);
+        env->DeleteLocalRef(value);
+        throw;
+    }
+    env->ReleaseStringChars(value, chars);
+    env->DeleteLocalRef(value);
+    remainingUtf16 -= length;
+    return !env->ExceptionCheck();
+}
+
 bool callTokenCallback(JNIEnv* env, jobject callback, jmethodID onToken, const std::string& token) {
     const auto utf16Token = utf8ToUtf16(token);
     jstring javaToken = env->NewString(
@@ -422,12 +454,13 @@ bool callTokenCallback(JNIEnv* env, jobject callback, jmethodID onToken, const s
     return keepGenerating == JNI_TRUE && !env->ExceptionCheck();
 }
 
-void restoreAndroidSteppingStatusIfNeeded(MNN::Transformer::Llm* llm) {
+void restoreAndroidSteppingStatusIfNeeded(MNN::Transformer::Llm* llm, bool newRequest = false) {
     const auto* context = llm == nullptr ? nullptr : llm->getContext();
     if (context == nullptr) return;
 
     if (context->status == MNN::Transformer::LlmStatus::MAX_TOKENS_FINISHED ||
-        context->status == MNN::Transformer::LlmStatus::NORMAL_FINISHED) {
+        context->status == MNN::Transformer::LlmStatus::NORMAL_FINISHED ||
+        (newRequest && context->status == MNN::Transformer::LlmStatus::USER_CANCEL)) {
         auto* mutableContext = const_cast<MNN::Transformer::LlmContext*>(context);
         mutableContext->status = MNN::Transformer::LlmStatus::RUNNING;
     }
@@ -460,7 +493,8 @@ void runGeneration(
     session->outputTokens = 0;
     if (!configureGeneration(env, session, {temperature, topP, maxTokens})) return;
     if (session->stopRequested) return;
-    restoreAndroidSteppingStatusIfNeeded(session->llm);
+    // Clear a previous request's cancellation only at this serialized request boundary.
+    restoreAndroidSteppingStatusIfNeeded(session->llm, true);
 
     const auto callbackClass = env->GetObjectClass(callback);
     const auto onToken = env->GetMethodID(callbackClass, "onToken", "(Ljava/lang/String;)Z");
@@ -593,6 +627,62 @@ Java_com_example_persona_core_ai_mnn_NativeMnnSession_nativeCreate(
     session->configPath = path;
     if (!configureGeneration(env, session.get(), {})) return 0;
     return reinterpret_cast<jlong>(session.release());
+}
+
+extern "C" JNIEXPORT jintArray JNICALL
+Java_com_example_persona_core_ai_mnn_NativeMnnSession_nativeInspectChatPrompt(
+    JNIEnv* env, jobject, jlong handle, jobjectArray roles, jobjectArray contents
+) {
+    const auto failure = [&]() -> jintArray {
+        // Upstream exceptions may contain input; expose only a null failure.
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        return nullptr;
+    };
+    try {
+        if (env->ExceptionCheck() || handle == 0 || roles == nullptr || contents == nullptr) {
+            return failure();
+        }
+        const auto count = env->GetArrayLength(roles);
+        if (env->ExceptionCheck() || count < 1 || count > 128) return failure();
+        const auto contentCount = env->GetArrayLength(contents);
+        if (env->ExceptionCheck() || count != contentCount) return failure();
+
+        auto* session = reinterpret_cast<MnnSession*>(handle);
+        std::lock_guard<std::mutex> lock(session->mutex);
+        if (session->llm == nullptr) return failure();
+        MNN::Transformer::ChatMessages messages;
+        messages.reserve(static_cast<size_t>(count));
+        jsize remainingUtf16 = 16384;
+        for (jsize index = 0; index < count; ++index) {
+            std::string role;
+            std::string content;
+            if (!readVerificationString(env, roles, index, remainingUtf16, role) ||
+                (role != "system" && role != "user" && role != "assistant") ||
+                !readVerificationString(env, contents, index, remainingUtf16, content)) {
+                return failure();
+            }
+            messages.emplace_back(std::move(role), std::move(content));
+        }
+
+        // Inspect the template and tokenizer only; never enter the generation path.
+        const auto prompt = session->llm->apply_chat_template(messages);
+        const auto inputIds = session->llm->tokenizer_encode(prompt);
+        if (inputIds.empty() || inputIds.size() > 32768 || env->ExceptionCheck()) return failure();
+        const std::vector<jint> ids(inputIds.begin(), inputIds.end());
+        const auto result = env->NewIntArray(static_cast<jsize>(ids.size()));
+        if (result == nullptr || env->ExceptionCheck()) {
+            if (result != nullptr) env->DeleteLocalRef(result);
+            return failure();
+        }
+        env->SetIntArrayRegion(result, 0, static_cast<jsize>(ids.size()), ids.data());
+        if (env->ExceptionCheck()) {
+            env->DeleteLocalRef(result);
+            return failure();
+        }
+        return result;
+    } catch (...) {
+        return failure();
+    }
 }
 
 extern "C" JNIEXPORT jintArray JNICALL
