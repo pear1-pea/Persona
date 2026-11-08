@@ -243,3 +243,12 @@ passed engineering checks and failed all six strict extraction cases. Candidate
 admission remains closed. It also reproduced and fixed stale USER_CANCEL at the
 serialized new-request boundary; continuation stepping must never clear cancellation.
 Final build reused passing 602 JVM results and reran the real JNI probe successfully.
+
+## Release static checks
+
+CI also builds unsigned Release APK/AAB, runs `testReleaseUnitTest`, checks all
+packaged arm64 ELF LOAD alignments and uses SDK `zipalign` for 16KiB ZIP alignment.
+The unsigned artifacts are inspection-only. Signing, backend configuration,
+installation/upgrade and 16KiB device execution are separate gates.
+See [commands](../../tools/release/README.md) and
+[public release readiness](../qa/release-readiness-2026-11-08.md).
