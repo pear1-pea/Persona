@@ -529,6 +529,51 @@ class MemoryCurationViewModelTest {
         assertEquals(listOf(fact), state.possibleConflicts)
     }
 
+    @Test fun `quality upgrade is independent disabled by default and consumed per request`() = runTest(dispatcher) {
+        enable(cloud = true)
+        assertFalse(vm.uiState.value.qualityUpgradeAllowed)
+        vm.allowQualityUpgrade(true)
+        assertTrue(vm.uiState.value.qualityUpgradeAllowed)
+        vm.extractLocal()
+        runCurrent()
+        assertEquals(listOf(true), repository.upgrades)
+        assertFalse(vm.uiState.value.qualityUpgradeAllowed)
+        vm.extractLocal()
+        runCurrent()
+        assertEquals(listOf(true, false), repository.upgrades)
+    }
+
+    @Test fun `cloud consent and nonlocal source are both required for upgrade selection`() = runTest(dispatcher) {
+        enable()
+        vm.allowQualityUpgrade(true)
+        assertFalse(vm.uiState.value.qualityUpgradeAllowed)
+        enable(cloud = true)
+        whenever(chat.getMessageById("source")).thenReturn(message().copy(localOnly = true))
+        vm.reload()
+        runCurrent()
+        vm.allowQualityUpgrade(true)
+        assertFalse(vm.uiState.value.qualityUpgradeAllowed)
+    }
+
+    @Test fun `reselecting source or revoking cloud consent clears upgrade permission`() = runTest(dispatcher) {
+        enable(cloud = true)
+        vm.allowQualityUpgrade(true)
+        vm.selectMessage("source")
+        assertFalse(vm.uiState.value.qualityUpgradeAllowed)
+        vm.allowQualityUpgrade(true)
+        enable(cloud = false)
+        assertFalse(vm.uiState.value.qualityUpgradeAllowed)
+    }
+
+    @Test fun `manual cloud extraction does not turn into another automatic attempt`() = runTest(dispatcher) {
+        enable(cloud = true)
+        vm.allowQualityUpgrade(true)
+        vm.extractCloud()
+        runCurrent()
+        assertEquals(listOf(false), repository.upgrades)
+        assertFalse(vm.uiState.value.qualityUpgradeAllowed)
+    }
+
     private data class Confirmation(val id: String, val content: String, val type: MemoryType,
         val shared: Boolean, val cloud: Boolean, val expires: Long?, val replaceId: String? = null,
         val revision: Int? = null)
@@ -538,6 +583,7 @@ class MemoryCurationViewModelTest {
         var settings = MemoryPreferences()
         var conflictRows = emptyList<Memory>()
         val extractions = mutableListOf<String>()
+        val upgrades = mutableListOf<Boolean>()
         val confirmations = mutableListOf<Confirmation>()
         val ignored = mutableListOf<String>()
         var summaries = 0
@@ -560,8 +606,9 @@ class MemoryCurationViewModelTest {
             extractions += "selected:$personaId:$sourceMessageId"
             onExtract()
         }
-        override suspend fun proposeWithModel(personaId: String, sourceMessageId: String, cloud: Boolean) {
+        override suspend fun proposeWithModel(personaId: String, sourceMessageId: String, cloud: Boolean, allowQualityUpgrade: Boolean) {
             extractions += "${if (cloud) "cloud" else "local"}:$personaId:$sourceMessageId"
+            upgrades += allowQualityUpgrade
             onExtract()
         }
         override suspend fun ignore(id: String) { ignored += id }

@@ -40,3 +40,8 @@ Index of all project documentation. The agent entry point is
 - Native/device plan: [qa/native-test-plan.md](qa/native-test-plan.md)
 - Model package acceptance: [qa/model-package-acceptance.md](qa/model-package-acceptance.md)
 - Model packager: [../tools/model-packager/README.md](../tools/model-packager/README.md)
+
+- P4 Windows/device acceptance: [qa/p4-status-2026-11-08.md](qa/p4-status-2026-11-08.md)
+- P4 Mac implementation and bounded contract escalation: [qa/p4-mac-status-2026-11-06.md](qa/p4-mac-status-2026-11-06.md)
+- P4 single-model compatibility research: [qa/p4-model-candidate-2026-11-05.md](qa/p4-model-candidate-2026-11-05.md)
+- Inference telemetry comparison CLI: [../tools/inference-eval/README.md](../tools/inference-eval/README.md)

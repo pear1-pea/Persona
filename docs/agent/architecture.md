@@ -104,9 +104,9 @@ use revision CAS, and clear deleted content while retaining a tombstone. Source
 message deletion invalidates linked notes. Account cleanup deletes that owner's notes.
 
 Each backend prepares a fresh authorized context through `GenerationSession`;
-fallback never reuses a local memory prompt or partial reply. The initial selector
-uses at most four newest records with a 1200-character UTF-16 content budget, without
-semantic retrieval. Existing token/character planners still enforce executor budgets.
+fallback never reuses a local memory prompt or partial reply. The current selector uses query-dependent keyword ranking, with at most four
+records and a 1200-character UTF-16 content budget. Blank queries preserve recent-record
+selection. No embedding retrieval is active. Existing token/character planners still enforce executor budgets.
 
 `MemoryPrompt` (`quoted-user-facts-v4`) adds only permitted content as quoted JSON
 facts to the current user turn. Trusted system rules stay separate; provenance stays
@@ -137,3 +137,22 @@ shared coordination exists. Reservations are conservative on uncertain upstream 
 there is no durable per-request billing recovery ledger.
 
 See [backend/README.md](../../backend/README.md) for endpoints, limits, and deployment.
+
+
+## Controlled curation and diagnostics (P3/P4)
+
+Room v9 stores pending candidates, owner preferences and summary provenance.
+`RoomMemoryCurationRepository` revalidates source, identity, consent revision and task
+state before generation and persistence. Model output only creates pending candidates.
+`MemoryExtractionRunner` permits one contract-failure cloud attempt after local output
+fails strict parsing, with separate per-request opt-in and existing cloud consent.
+A local-only source, stopped request or non-unmetered network prevents escalation.
+Authorization and network are checked again before dispatch. Both attempts share a
+60-second budget, and runtime errors or cancellation never trigger contract escalation.
+
+`InferenceAttemptTracker` hashes request/model identifiers and records actual executor
+attempts. `BufferedInferenceTelemetry` keeps disk IO out of generation/cancellation.
+The bounded `FileInferenceJournal` is device-level and best effort, has no chat or
+account fields, and supports explicit export/clear in Settings. Structural acceptance
+is distinct from execution completion and does not establish semantic quality.
+See the dated P4 Mac QA record for Android/device work still pending.

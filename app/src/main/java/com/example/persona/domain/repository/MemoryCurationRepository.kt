@@ -11,7 +11,7 @@ interface MemoryCurationRepository {
     suspend fun preferences(): MemoryPreferences
     suspend fun configure(enabled: Boolean, cloudExtractionAllowed: Boolean)
     suspend fun propose(personaId: String, sourceMessageId: String, explicitOnly: Boolean = false)
-    suspend fun proposeWithModel(personaId: String, sourceMessageId: String, cloud: Boolean = false)
+    suspend fun proposeWithModel(personaId: String, sourceMessageId: String, cloud: Boolean = false, allowQualityUpgrade: Boolean = false)
     suspend fun ignore(id: String)
     suspend fun conflicts(id: String): List<Memory>
     suspend fun confirm(id: String, content: String, type: MemoryType, shared: Boolean = false,

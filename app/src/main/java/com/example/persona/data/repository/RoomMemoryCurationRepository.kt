@@ -8,6 +8,8 @@ import com.example.persona.core.ai.GenerationSession
 import com.example.persona.core.ai.StopReason
 import com.example.persona.core.auth.AuthManager
 import com.example.persona.core.memory.MemoryExtraction
+import com.example.persona.core.memory.MemoryExtractionRunner
+import com.example.persona.core.memory.QualityUpgradePermission
 import com.example.persona.data.local.AppDatabase
 import com.example.persona.data.local.entity.MemoryCandidateEntity
 import com.example.persona.data.local.entity.MemoryEntity
@@ -90,88 +92,109 @@ class RoomMemoryCurationRepository @Inject constructor(
         persist(source, suggestions, manual = !explicitOnly, version = MemoryExtraction.VERSION, reopen = !explicitOnly)
     }
 
-    override suspend fun proposeWithModel(personaId: String, sourceMessageId: String, cloud: Boolean) = auth.withIdentity {
+    override suspend fun proposeWithModel(personaId: String, sourceMessageId: String, cloud: Boolean,
+        allowQualityUpgrade: Boolean) = auth.withIdentity {
         val owner = auth.requestIdentity().ownerId
         val consent = requireNotNull(dao.preferences(owner))
         check(consent.enabled && (!cloud || consent.cloudExtractionAllowed)) { "Extraction consent is required" }
-        val source = source(owner, personaId, sourceMessageId, manual = true)
-        check(!cloud || !source.localOnly) { "Source is restricted to local processing" }
+        val original = source(owner, personaId, sourceMessageId, manual = true)
+        check(!cloud || !original.localOnly) { "Source is restricted to local processing" }
         val taskId = UUID.randomUUID().toString()
         auth.withLocalIdentity {
-            dao.insert(MemoryCandidateEntity(taskId, owner, personaId, sourceMessageId, hash(source.content),
+            dao.insert(MemoryCandidateEntity(taskId, owner, personaId, sourceMessageId, hash(original.content),
                 "", "FACT", "", MemoryExtraction.VERSION, true, "RUNNING", null, System.currentTimeMillis()))
             synchronized(activeTasks) { activeTasks.add(taskId) }
         }
-        val session = GenerationSession()
+        var session: GenerationSession? = null
+        var attemptCloud = cloud
         var modelIdentity: String? = null
-        // Consent and source validity are checked again immediately before dispatch and persistence.
-        session.bindContextProvider {
+        suspend fun authorize(useCloud: Boolean): MessageEntity {
             val current = source(owner, personaId, sourceMessageId, manual = true)
-            check(hash(current.content) == hash(source.content)) { "Source changed" }
+            check(hash(current.content) == hash(original.content)) { "Source changed" }
             check(dao.candidate(owner, taskId)?.status == "RUNNING") { "Extraction task was invalidated" }
             val currentConsent = requireNotNull(dao.preferences(owner))
-            check(currentConsent.revision == consent.revision && currentConsent.enabled && (!cloud || currentConsent.cloudExtractionAllowed))
-            check(!cloud || !current.localOnly)
-            if (!cloud) {
-                val currentModel = requireNotNull(ai.localModelIdentity)
-                if (modelIdentity == null) modelIdentity = currentModel
-                check(currentModel == modelIdentity) { "Extraction model changed" }
-            }
-            GenerationContext("只从用户原文提取可确认资料，输出 JSON。", emptyList(), MemoryExtraction.prompt(current.content))
+            check(currentConsent.revision == consent.revision && currentConsent.enabled &&
+                (!useCloud || currentConsent.cloudExtractionAllowed)) { "Extraction consent changed" }
+            check(!useCloud || !current.localOnly) { "Source is restricted to local processing" }
+            return current
         }
-        val output = StringBuilder()
-        var completed = false
         try {
-            if (cloud) modelIdentity = "cloud-proxy-configured-model"
-            withTimeout(60_000L) {
+            val result = withTimeout(60_000L) {
                 coroutineScope {
                     val generation = this
                     val observer = launch {
                         combine(dao.observePreferences(owner), dao.observeSource(owner, sourceMessageId),
                             dao.observeTask(owner, taskId)) { p, row, task ->
-                            task?.status == "RUNNING" && p?.revision == consent.revision && p.enabled && (!cloud || p.cloudExtractionAllowed) &&
-                                row != null && row.status == "NORMAL" && row.isFromUser &&
-                                hash(row.content) == hash(source.content) && (!cloud || !row.localOnly)
+                            task?.status == "RUNNING" && p?.revision == consent.revision && p.enabled &&
+                                (!attemptCloud || p.cloudExtractionAllowed) && row != null &&
+                                row.status == "NORMAL" && row.isFromUser && hash(row.content) == hash(original.content) &&
+                                (!attemptCloud || !row.localOnly)
                         }.collect { valid ->
                             if (!valid) generation.cancel("Extraction source or consent changed")
                         }
                     }
                     try {
-                        ai.streamMemoryExtraction(
-                            session, cloud, "只从用户原文提取可确认资料，输出 JSON。", MemoryExtraction.prompt(source.content),
-                            GenerationParams(temperature = 0f, maxTokens = 256)
-                        ).collect { event ->
-                            when (event) {
-                                is GenerationEvent.Delta -> {
-                                    check(output.length + event.text.length <= 6000) { "Extraction output is too long" }
-                                    output.append(event.text)
+                        MemoryExtractionRunner.run(original.content, cloud, permission = {
+                            val current = authorize(false)
+                            QualityUpgradePermission(allowQualityUpgrade, consent.cloudExtractionAllowed,
+                                current.localOnly, ai.memoryUpgradeNetwork(), session?.stopReason != null)
+                        }, generate = { useCloud, automatic ->
+                            attemptCloud = useCloud
+                            authorize(useCloud)
+                            val currentSession = GenerationSession(taskId).also { session = it }
+                            modelIdentity = if (useCloud) "cloud-proxy-configured-model" else null
+                            currentSession.bindContextProvider {
+                                val current = authorize(useCloud)
+                                if (!useCloud) {
+                                    val currentModel = requireNotNull(ai.localModelIdentity)
+                                    if (modelIdentity == null) modelIdentity = currentModel
+                                    check(currentModel == modelIdentity) { "Extraction model changed" }
                                 }
-                                is GenerationEvent.Completed -> completed = true
-                                is GenerationEvent.Failed -> error("Extraction failed: ${event.error.type}")
-                                is GenerationEvent.Stopped -> error("Extraction stopped")
+                                GenerationContext("只从用户原文提取可确认资料，输出 JSON。", emptyList(),
+                                    MemoryExtraction.prompt(current.content))
                             }
-                        }
+                            val output = StringBuilder()
+                            var completed = false
+                            ai.streamMemoryExtraction(currentSession, useCloud, "只从用户原文提取可确认资料，输出 JSON。",
+                                MemoryExtraction.prompt(original.content), GenerationParams(temperature = 0f, maxTokens = 256),
+                                automaticCloud = automatic).collect { event ->
+                                when (event) {
+                                    is GenerationEvent.Delta -> {
+                                        check(output.length + event.text.length <= 6000) { "Extraction output is too long" }
+                                        output.append(event.text)
+                                    }
+                                    is GenerationEvent.Completed -> completed = true
+                                    is GenerationEvent.Failed -> error("Extraction failed: ${event.error.type}")
+                                    is GenerationEvent.Stopped -> error("Extraction stopped")
+                                }
+                            }
+                            check(completed && currentSession.stopReason == null) { "Extraction did not complete" }
+                            if (!useCloud) check(ai.localModelIdentity == modelIdentity) { "Extraction model changed" }
+                            output.toString()
+                        }, contract = { _, accepted ->
+                            ai.recordExtractionContract(checkNotNull(session), accepted)
+                        })
                     } finally {
                         observer.cancel()
                     }
                 }
             }
-            check(completed) { "Extraction did not complete" }
-            if (!cloud) check(ai.localModelIdentity == modelIdentity) { "Extraction model changed" }
-            val currentConsent = requireNotNull(dao.preferences(owner))
-            check(currentConsent.revision == consent.revision && currentConsent.enabled &&
-                (!cloud || currentConsent.cloudExtractionAllowed))
-            persist(
-                source, MemoryExtraction.decode(output.toString(), source.content), true,
-                "${MemoryExtraction.VERSION}:$modelIdentity:t0:p0.8:max256", taskId, consent.revision, reopen = true
-            )
+            authorize(result.usedCloud)
+            persist(original, result.suggestions, true,
+                "${MemoryExtraction.VERSION}:$modelIdentity:t0:p0.8:max256:upgrade=${result.upgraded}",
+                taskId, consent.revision, reopen = true)
         } finally {
-            session.requestStop(StopReason.USER_REQUESTED)
-            ai.stopGeneration(session)
             try {
-                withContext(NonCancellable) { dao.finishTask(owner, taskId, "FAILED") }
+                session?.let {
+                    it.requestStop(StopReason.USER_REQUESTED)
+                    ai.stopGeneration(it)
+                }
             } finally {
-                synchronized(activeTasks) { activeTasks.remove(taskId) }
+                try {
+                    withContext(NonCancellable) { dao.finishTask(owner, taskId, "FAILED") }
+                } finally {
+                    synchronized(activeTasks) { activeTasks.remove(taskId) }
+                }
             }
         }
     }

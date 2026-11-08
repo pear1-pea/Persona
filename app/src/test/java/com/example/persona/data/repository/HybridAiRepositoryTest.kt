@@ -165,6 +165,41 @@ class HybridAiRepositoryTest {
         assertEquals(listOf(delta("chat reply")), events)
     }
 
+    @Test fun `automatic extraction rejects metered unknown and offline networks before dispatch`() = runTest {
+        for (network in listOf(NetworkState.METERED, NetworkState.UNKNOWN, NetworkState.OFFLINE)) {
+            whenever(routingContextProvider.networkState()).thenReturn(network)
+            assertTrue(runCatching {
+                repository.streamMemoryExtraction(GenerationSession(), true, "system", "source", GenerationParams(),
+                    automaticCloud = true).toList()
+            }.isFailure)
+        }
+        verify(cloudRepository, never()).streamResponseWithParams(any(), any(), any(), any())
+    }
+
+    @Test fun `automatic extraction rechecks network after context preparation`() = runTest {
+        val session = GenerationSession().apply {
+            bindContextProvider {
+                whenever(routingContextProvider.networkState()).thenReturn(NetworkState.METERED)
+                com.example.persona.core.ai.GenerationContext("system", emptyList(), "source")
+            }
+        }
+        val events = repository.streamMemoryExtraction(session, true, "system", "source", GenerationParams(),
+            automaticCloud = true).toList()
+        assertEquals(GenerationErrorType.NETWORK, (events.single() as GenerationEvent.Failed).error.type)
+        verify(cloudRepository, never()).streamResponseWithParams(any(), any(), any(), any())
+    }
+
+    @Test fun `explicit manual cloud extraction remains available on metered network`() = runTest {
+        whenever(routingContextProvider.networkState()).thenReturn(NetworkState.METERED)
+        whenever(cloudRepository.streamResponseWithParams(any(), any(), any(), any())).thenReturn(flow {
+            emit(delta("reply"))
+            emit(completed())
+        })
+        val events = repository.streamMemoryExtraction(GenerationSession(), true, "system", "source", GenerationParams()).toList()
+        assertTrue(events.last() is GenerationEvent.Completed)
+        verify(cloudRepository).streamResponseWithParams(any(), any(), any(), any())
+    }
+
     @Test
     fun `fallback rebuilds context and never reuses local memory or partial output`() = runTest {
         assertTrue(repository.initializeLocalModel())

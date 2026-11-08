@@ -181,3 +181,39 @@ quality defects do not become passing results because engineering boundaries pas
 Local model extraction remains a Debug experiment and every candidate needs user
 confirmation. The release workflow offers rules, manual selection and separately
 authorized cloud extraction. Embedding remains conditional on measured need.
+
+
+## P4 contract escalation and telemetry
+
+The standard Gradle unit suite includes `MemoryExtractionRunnerTest`,
+`InferenceAttemptTrackerTest`, `BufferedInferenceTelemetryTest`, the telemetry file
+safety tests and diagnostics ViewModel tests. Offline tooling checks run with:
+
+```bash
+python3 -B -m unittest discover -s tools/inference-eval/tests -v
+python3 -B tools/inference-eval/check_fixture.py
+```
+
+`data.local.P4ExtractionCascadeInstrumentedTest` is validation-only and requires
+`runP4Cascade=true`. It uses actual Room/Auth/Hybrid with synthetic files, engine
+and SSE, and makes no JNI or network calls. Resource admission remains active.
+Run it after building/installing isolated APKs on Windows. Its eight cases do not
+replace real model, cloud or SAF/UI acceptance. See [P4 Mac QA](../qa/p4-mac-status-2026-11-06.md)
+for exact local coverage and pending device checks.
+
+P4 device acceptance additionally has validation-only `features.P4DiagnosticsUiInstrumentedTest`
+and `features.P4DiagnosticsSafSaveInstrumentedTest` (`runP4Diagnostics=true`, fresh
+`p4DiagnosticsRunId`). The first covers actual Hilt UI, real picker cancellation,
+recreation, raw result routing and clear. Its private file URI success is explicitly
+not a successful SAF save. The second waits for a host to select a fresh QA filename
+in actual DocumentsUI; it requires independent host readback of the saved content.
+Picker observations are restricted to the QA filename control and Save button.
+Both refuse an existing validation journal and preserve unowned data.
+
+`features.P4RuntimeTelemetryInstrumentedTest` requires `runP4Runtime=true`, fresh
+`p4RunId`, `p4SourceRevision`, and verified Qwen2.5-0.5B source files under validation
+`files/model-sources/primary`. It runs actual MNN/JNI extraction and cancellation,
+with an explicitly controlled no-socket SSE upgrade. It never fabricates a local
+parser failure: the observed local output determines whether an upgrade occurs.
+Its deliberate first-delta gate checks preemption and is not a performance benchmark.
+See [P4 concentrated acceptance](../qa/p4-status-2026-11-08.md) for executed results.
