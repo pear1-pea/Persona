@@ -39,5 +39,6 @@ export const chatSchema = z.object({
   max_tokens: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional()
 }).strict()
 
-export const personaIdSchema = z.string().uuid()
-export const sessionIdSchema = z.string().uuid()
+// Preserve the existing hexadecimal identifier contract without new UUID variant restrictions.
+export const personaIdSchema = z.guid()
+export const sessionIdSchema = z.guid()
