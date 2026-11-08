@@ -28,6 +28,8 @@ jobs:
         run: python -B -m unittest discover -s tools/inference-eval/tests -v
       - name: Check synthetic CLI examples
         run: python -B tools/inference-eval/check_fixture.py
+      - name: Check candidate preparation contracts (synthetic, no model)
+        run: python -B -m unittest discover -s tools/model-candidate/tests -v
 
   android:
     name: Android build + unit tests

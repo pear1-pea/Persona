@@ -217,3 +217,29 @@ with an explicitly controlled no-socket SSE upgrade. It never fabricates a local
 parser failure: the observed local output determines whether an upgrade occurs.
 Its deliberate first-delta gate checks preemption and is not a performance benchmark.
 See [P4 concentrated acceptance](../qa/p4-status-2026-11-08.md) for executed results.
+
+
+## Fixed Qwen3 native research preparation
+
+`tools/model-candidate/` freezes HF references from the actual production extraction
+prompt and fixed tokenizer snapshot. It uses a pinned package receipt and a fresh
+source-bound bundle. The standard-library Python contracts run in CI; the local
+Kotlin checker explicitly uses a BuildConfig boundary and is not Android acceptance.
+
+`core.ai.mnn.Qwen3NativeProbeInstrumentedTest` is isolated, arm64/API29+ and opt-in
+(`runQwen3Probe=true` plus run ID, bundle SHA and source revision). It bypasses the
+product model manager and routing only for independent JNI research. Inspection
+compares the actual native template IDs before generating. Production QWEN3 family
+admission remains closed. It records three smoke cases, six fixed extraction cases
+and callback-stop/reset recovery, with separate engineering and quality statuses.
+Use the owned host driver, its independent deadline and cleanup policy.
+
+See [tool commands](../../tools/model-candidate/README.md) and
+[Mac scope/evidence](../qa/qwen3-native-probe-mac-2026-11-08.md). Android compilation,
+linking, actual model generation and resource results require Windows and a device.
+
+The [2026-11-08 Windows/device run](../qa/qwen3-native-probe-windows-2026-11-08.md)
+passed engineering checks and failed all six strict extraction cases. Candidate
+admission remains closed. It also reproduced and fixed stale USER_CANCEL at the
+serialized new-request boundary; continuation stepping must never clear cancellation.
+Final build reused passing 602 JVM results and reran the real JNI probe successfully.

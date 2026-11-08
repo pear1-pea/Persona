@@ -433,3 +433,17 @@ Qwen3-0.6B INT8 已完成固定源码导出物核验与 Windows 三组模板/Tok
 QA 安装、临时导出、隔离服务已清理，原 App、Windows 项目和配置保护检查通过。
 提交、远程 CI 与合入结果以 P4 PR Checks 和 Git 历史为准；其余 P4 实验继续按启动条件推进。
 详细失败记录、证据与边界见 [P4 集中验收](qa/p4-status-2026-11-08.md)。
+
+
+Qwen3 Android 独立 native 验证的 Mac 准备于 2026-11-08 完成：只读模板 IDs 检查口、
+固定九条 HF 参考、六条自动质量合同与隔离 host driver 已准备；63 项 Python 与35项不同 Kotlin 用例通过。
+Android 构建和真机执行待验收，候选仍未采用。见 [Mac 准备回执](qa/qwen3-native-probe-mac-2026-11-08.md)。
+
+### Qwen3 Android 独立实验收尾，2026-11-08
+
+后续已完成 Windows 完整构建、602 项 JVM 与独立 JNI 真机验证。九条模板和生成检查通过，
+修复并复测取消后 reset 零输出问题；固定六条提取全部严格解析失败，质量门槛0/6。
+本次不采用候选、不开放生产准入，不继续自动改 prompt 或放宽解析。保留现有模型与记忆确认流程。
+Mac 65项 Python、35项不同 Kotlin 检查通过；小样本资源观测不作为通用质量或性能升级证明。
+手机与隔离服务已清理，原项目和配置未变；以上为本地验收记录，后续提交、远程CI和合入以Git与PR为准。
+详见 [Windows/真机实验回执](qa/qwen3-native-probe-windows-2026-11-08.md)。
