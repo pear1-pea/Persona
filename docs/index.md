@@ -8,6 +8,7 @@ Index of all project documentation. The agent entry point is
 - [README](../README.md) — product overview, features, and quick start
 - [Backend README](../backend/README.md) — API, database, limits, deployment
 - [Long-term optimization plan](long-term-optimization-plan.md) — phased reliability, Persona, memory, and evaluation roadmap
+- [Public release readiness](qa/release-readiness-2026-11-08.md) — common checks, unsigned artifacts and remaining distribution gates
 - [P3 TODO](p3-todo.md) — accepted decisions, implementation order, and verification gates
 
 ## Development (agent-focused)
