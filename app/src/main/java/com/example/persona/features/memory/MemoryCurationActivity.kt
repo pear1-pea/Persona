@@ -50,6 +50,7 @@ class MemoryCurationActivity : AppCompatActivity() {
     private lateinit var confirm: Button
     private lateinit var selected: Button
     private lateinit var local: Button
+    private lateinit var qualityUpgrade: CheckBox
     private lateinit var cloud: Button
     private lateinit var cancel: Button
     private lateinit var summary: Button
@@ -93,6 +94,12 @@ class MemoryCurationActivity : AppCompatActivity() {
         selected = button(body, R.string.curation_selected) { viewModel.proposeSelected() }
         local = button(body, R.string.curation_local) { viewModel.extractLocal() }
         local.isVisible = BuildConfig.DEBUG
+        qualityUpgrade = check(body, R.string.curation_quality_upgrade) {
+            if (!rendering) viewModel.allowQualityUpgrade(it)
+        }.apply {
+            isVisible = BuildConfig.DEBUG
+            isSaveEnabled = false
+        }
         cloud = button(body, R.string.curation_cloud) {
             AlertDialog.Builder(this).setMessage(R.string.curation_cloud_notice)
                 .setNegativeButton(R.string.memory_cancel, null)
@@ -183,6 +190,9 @@ class MemoryCurationActivity : AppCompatActivity() {
                 else -> getString(R.string.curation_ready)
             }
             val source = state.messages.firstOrNull { it.id == state.selectedMessageId }
+            qualityUpgrade.isChecked = state.qualityUpgradeAllowed
+            qualityUpgrade.isEnabled = active && state.preferences.cloudExtractionAllowed &&
+                source != null && !source.localOnly
             selected.isEnabled = active && source != null
             local.isEnabled = selected.isEnabled
             cloud.isEnabled = selected.isEnabled && state.preferences.cloudExtractionAllowed && source?.localOnly == false

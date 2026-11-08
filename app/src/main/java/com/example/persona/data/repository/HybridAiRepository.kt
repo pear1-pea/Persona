@@ -2,6 +2,9 @@ package com.example.persona.data.repository
 
 import android.util.Log
 import com.example.persona.core.memory.InferencePriorityGate
+import com.example.persona.core.ai.InferenceAttemptTracker
+import com.example.persona.core.ai.telemetry.InferenceTelemetry
+import com.example.persona.core.ai.telemetry.NoopInferenceTelemetry
 import com.example.persona.core.ai.ChatMessage
 import com.example.persona.core.ai.Backend
 import com.example.persona.core.ai.EngineState
@@ -53,7 +56,8 @@ class HybridAiRepository internal constructor(
     private val router: HybridRouter,
     private val networkState: () -> NetworkState,
     private val routeScope: CoroutineScope,
-    private val modelDispatcher: CoroutineDispatcher = Dispatchers.IO
+    private val modelDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    telemetry: InferenceTelemetry = NoopInferenceTelemetry
 ) {
     @Inject
     constructor(
@@ -61,14 +65,16 @@ class HybridAiRepository internal constructor(
         localAiEngine: LocalAiEngine,
         localModelManager: LocalModelManager,
         router: HybridRouter,
-        routingContextProvider: RoutingContextProvider
+        routingContextProvider: RoutingContextProvider,
+        telemetry: InferenceTelemetry = NoopInferenceTelemetry
     ) : this(
         cloudRepository,
         localAiEngine,
         localModelManager,
         router,
         routingContextProvider::networkState,
-        CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        CoroutineScope(SupervisorJob() + Dispatchers.Default),
+        telemetry = telemetry
     )
 
     enum class Mode { CLOUD, LOCAL }
@@ -83,6 +89,7 @@ class HybridAiRepository internal constructor(
     val lastRoutingDecision = _lastRoutingDecision.asStateFlow()
 
     private val priority = InferencePriorityGate(::stopGeneration)
+    private val attempts = InferenceAttemptTracker(telemetry)
     private val routeLock = Any()
     private val modelOperationMutex = Mutex()
 
@@ -297,7 +304,8 @@ class HybridAiRepository internal constructor(
         cloud: Boolean,
         systemPrompt: String,
         userMessage: String,
-        params: GenerationParams
+        params: GenerationParams,
+        automaticCloud: Boolean = false
     ): Flow<GenerationEvent> = flow {
         session.stopReason?.let {
             emit(GenerationEvent.Stopped(it, ""))
@@ -310,6 +318,12 @@ class HybridAiRepository internal constructor(
         }
         try {
             currentCoroutineContext().ensureActive()
+            check(!automaticCloud || cloud && memoryUpgradeNetwork() == NetworkState.UNMETERED) {
+                "Automatic cloud extraction requires an unmetered network"
+            }
+            session.memoryExtraction = true
+            session.contractUpgrade = automaticCloud
+            if (automaticCloud) session.inferenceAttempts.compareAndSet(0, 1)
             val decision = selectRouteForGeneration(
                 forceCloud = cloud, localOnly = !cloud,
                 privacyLevel = if (cloud) PrivacyLevel.PUBLIC else PrivacyLevel.PRIVATE,
@@ -320,12 +334,17 @@ class HybridAiRepository internal constructor(
             session.bindRoutingDecision(decision)
             emitAll(streamAuthorizedResponse(
                 if (cloud) Mode.CLOUD else Mode.LOCAL, session,
-                systemPrompt, userMessage, emptyList(), decision.route, params
+                systemPrompt, userMessage, emptyList(), decision.route, params, automaticCloud
             ))
         } finally {
             priority.end(session)
         }
     }
+
+    internal fun memoryUpgradeNetwork(): NetworkState = networkState()
+
+    internal suspend fun recordExtractionContract(session: GenerationSession, accepted: Boolean) =
+        attempts.contract(session, accepted)
 
     private fun streamCloudWithContext(
         session: GenerationSession,
@@ -333,7 +352,8 @@ class HybridAiRepository internal constructor(
         userMessage: String,
         history: List<ChatMessage>,
         params: GenerationParams,
-        fallbackRoute: Route? = null
+        fallbackRoute: Route? = null,
+        automaticCloud: Boolean = false
     ): Flow<GenerationEvent> = flow {
         val context = session.prepareContext(Backend.CLOUD, systemPrompt, history)
         currentCoroutineContext().ensureActive()
@@ -341,7 +361,8 @@ class HybridAiRepository internal constructor(
             emit(GenerationEvent.Stopped(it, ""))
             return@flow
         }
-        if (fallbackRoute != null && !canFallbackToCloud(session, fallbackRoute)) {
+        if ((fallbackRoute != null && !canFallbackToCloud(session, fallbackRoute)) ||
+            automaticCloud && memoryUpgradeNetwork() != NetworkState.UNMETERED) {
             emit(GenerationEvent.Failed(
                 backend = Backend.CLOUD,
                 error = GenerationError(GenerationErrorType.NETWORK,
@@ -350,9 +371,9 @@ class HybridAiRepository internal constructor(
             ))
             return@flow
         }
-        emitAll(cloudRepository.streamResponseWithParams(
+        emitAll(attempts.trace(session, Backend.CLOUD, null, cloudRepository.streamResponseWithParams(
             context.systemPrompt, context.userMessage ?: userMessage, context.history, params
-        ))
+        )))
     }
 
     private fun streamAuthorizedResponse(
@@ -362,11 +383,13 @@ class HybridAiRepository internal constructor(
         userMessage: String,
         history: List<ChatMessage>,
         route: Route,
-        params: GenerationParams
+        params: GenerationParams,
+        automaticCloud: Boolean = false
     ): Flow<GenerationEvent> = when (mode) {
         Mode.CLOUD -> flow {
             _activeMode.value = Mode.CLOUD
-            emitAll(streamCloudWithContext(session, systemPrompt, userMessage, history, params))
+            emitAll(streamCloudWithContext(session, systemPrompt, userMessage, history, params,
+                automaticCloud = automaticCloud))
         }
         Mode.LOCAL -> flow {
             session.stopReason?.let { reason ->
@@ -431,12 +454,12 @@ class HybridAiRepository internal constructor(
                 var terminalDelivered = false
                 val localFailure = try {
                     var failure: GenerationEvent.Failed? = null
-                    localAiEngine.streamResponse(
+                    attempts.trace(session, Backend.MNN, localModelIdentity, localAiEngine.streamResponse(
                         session = session,
                         prompt = localContext.userMessage ?: userMessage,
                         history = listOf(ChatMessage("system", localContext.systemPrompt)) + localContext.history,
                         params = params
-                    ).collect { event ->
+                    )).collect { event ->
                         if (localTerminal) return@collect
                         val stopReason = generation.stopReason
                         if (stopReason != null) {

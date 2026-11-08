@@ -6,7 +6,8 @@
     <string name="curation_open">候选与摘要</string>
     <string name="curation_policy">总开关默认关闭。手选原消息后点击提取，只生成候选，编辑并确认后才保存记忆。摘要仅在本地生成。</string>
     <string name="curation_enable">启用记忆候选与摘要</string>
-    <string name="curation_cloud_notice">云端提取会将下方选中的一条用户原消息（完整原文）发送到后端云模型，可能产生模型调用费用。授权仅允许提取，每次仍需点击“云端提取”。候选记忆是否允许用于云端对话由独立选项控制。本地专用消息无法发送云端。</string>
+    <string name="curation_cloud_notice">云端提取会将下方选中的一条用户原消息（完整原文）发送到后端云模型，可能产生模型调用费用。每次需点击“云端提取”，或单独允许本轮格式失败后转云。候选记忆是否允许用于云端对话由独立选项控制。本地专用消息无法发送云端。</string>
+    <string name="curation_quality_upgrade">本轮本地提取格式不合格时，允许转云一次（仅非计费网络，可能收费）</string>
     <string name="curation_cloud_consent">独立授权云端提取并知晓费用</string>
     <string name="curation_messages">手选一条消息（最近 100 条中的可用用户消息，包含传入的历史消息）</string>
     <string name="curation_message">%1$s\n%2$s</string>

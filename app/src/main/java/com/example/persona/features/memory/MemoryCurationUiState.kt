@@ -53,6 +53,7 @@ data class MemoryCurationUiState(
     val personaId: String? = null,
     val personaName: String = "",
     val preferences: MemoryPreferences = MemoryPreferences(),
+    val qualityUpgradeAllowed: Boolean = false,
     val loading: Boolean = true,
     val messages: List<Message> = emptyList(),
     val selectedMessageId: String? = null,

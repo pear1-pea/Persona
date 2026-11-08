@@ -2,6 +2,7 @@ package com.example.persona.core.ai
 
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.AtomicInteger
 
 data class GenerationContext(
     val systemPrompt: String,
@@ -15,6 +16,9 @@ data class GenerationSession(
     private val requestedStop = AtomicReference<StopReason?>(null)
     private val routeAuthorization = AtomicReference<RoutingDecision?>(null)
     private val contextProvider = AtomicReference<(suspend (Backend) -> GenerationContext)?>(null)
+    internal val inferenceAttempts = AtomicInteger()
+    internal var memoryExtraction = false
+    internal var contractUpgrade = false
 
     fun bindContextProvider(provider: suspend (Backend) -> GenerationContext) {
         check(contextProvider.compareAndSet(null, provider)) { "Request context is already bound" }

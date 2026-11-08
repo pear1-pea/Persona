@@ -16,6 +16,9 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Persona">
         <activity
+            android:name=".features.diagnostics.InferenceDiagnosticsActivity"
+            android:exported="false" />
+        <activity
             android:name=".features.memory.MemoryCurationActivity"
             android:exported="false" />
         <activity

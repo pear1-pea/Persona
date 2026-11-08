@@ -72,14 +72,24 @@ class MemoryCurationViewModel @Inject constructor(
             repository.configure(enabled, enabled && cloudExtractionAllowed)
             val preferences = repository.preferences()
             requireCurrent(captured)
-            _uiState.value = _uiState.value.copy(preferences = preferences)
+            _uiState.value = _uiState.value.copy(preferences = preferences,
+                qualityUpgradeAllowed = _uiState.value.qualityUpgradeAllowed && preferences.enabled &&
+                    preferences.cloudExtractionAllowed)
         }
     }
 
     fun selectMessage(id: String) {
         if (!available() || _uiState.value.messages.none { it.id == id }) return
         saved[SOURCE] = id
-        _uiState.value = _uiState.value.copy(selectedMessageId = id)
+        _uiState.value = _uiState.value.copy(selectedMessageId = id, qualityUpgradeAllowed = false)
+    }
+
+    fun allowQualityUpgrade(allow: Boolean) {
+        if (!available()) return
+        val state = _uiState.value
+        val source = state.messages.firstOrNull { it.id == state.selectedMessageId }
+        _uiState.value = state.copy(qualityUpgradeAllowed = allow && state.preferences.enabled &&
+            state.preferences.cloudExtractionAllowed && source != null && !source.localOnly)
     }
 
     fun proposeSelected() = extract(model = false, cloud = false)
@@ -90,11 +100,13 @@ class MemoryCurationViewModel @Inject constructor(
         if (!enabled() || (cloud && !_uiState.value.preferences.cloudExtractionAllowed)) return
         val persona = _uiState.value.personaId ?: return
         val source = _uiState.value.selectedMessageId ?: return
+        val allowUpgrade = model && !cloud && _uiState.value.qualityUpgradeAllowed
+        _uiState.value = _uiState.value.copy(qualityUpgradeAllowed = false)
         runOperation(CurationOperation.EXTRACTING) { captured ->
             val message = chat.getMessageById(source)
             requireCurrent(captured)
             check(message?.id == source && eligible(message, persona) && (!cloud || !message.localOnly))
-            if (model) repository.proposeWithModel(persona, source, cloud)
+            if (model) repository.proposeWithModel(persona, source, cloud, allowUpgrade)
             else repository.propose(persona, source, explicitOnly = false)
             requireCurrent(captured)
         }
@@ -273,9 +285,12 @@ class MemoryCurationViewModel @Inject constructor(
                 val recent = chat.getRecentMessages(persona, 100).filter { eligible(it, persona) }
                 val selected = _uiState.value.selectedMessageId?.let { chat.getMessageById(it) }
                 requireCurrent(captured)
+                val messages = (listOfNotNull(selected?.takeIf { eligible(it, persona) }) + recent)
+                    .distinctBy { it.id }
+                val mayUpgrade = preferences.enabled && preferences.cloudExtractionAllowed &&
+                    messages.firstOrNull { it.id == _uiState.value.selectedMessageId }?.localOnly == false
                 _uiState.value = _uiState.value.copy(preferences = preferences, loading = false,
-                    messages = (listOfNotNull(selected?.takeIf { eligible(it, persona) }) + recent)
-                        .distinctBy { it.id })
+                    messages = messages, qualityUpgradeAllowed = _uiState.value.qualityUpgradeAllowed && mayUpgrade)
                 coroutineScope {
                     launch {
                         repository.observe(persona).collect { rows ->

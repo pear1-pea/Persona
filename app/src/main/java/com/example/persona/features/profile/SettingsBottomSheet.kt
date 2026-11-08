@@ -14,6 +14,7 @@ import androidx.lifecycle.lifecycleScope
 import com.example.persona.core.auth.AuthManager
 import com.example.persona.core.util.SettingsManager
 import com.example.persona.databinding.DialogSettingsBinding
+import com.example.persona.features.diagnostics.InferenceDiagnosticsActivity
 import com.example.persona.features.model.ModelManagementActivity
 import com.example.persona.domain.repository.ChatRepository
 import com.example.persona.data.repository.RoomPersonaRepository
@@ -84,6 +85,11 @@ class SettingsBottomSheet : BottomSheetDialogFragment() {
 
         binding.btnModelManager.setOnClickListener {
             startActivity(Intent(requireContext(), ModelManagementActivity::class.java))
+            dismiss()
+        }
+
+        binding.btnInferenceDiagnostics.setOnClickListener {
+            startActivity(Intent(requireContext(), InferenceDiagnosticsActivity::class.java))
             dismiss()
         }
 

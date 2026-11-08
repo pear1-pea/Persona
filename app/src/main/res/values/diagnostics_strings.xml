@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="diagnostics_title">推理诊断</string>
+    <string name="diagnostics_policy">此处是本设备的匿名运行指标，不按账号区分。仅当前保留的诊断记录，不代表全部请求。记录会尽力保存，但繁忙或存储失败时可能缺失，不能据此推断总体成功率。仅在应用私有目录保存，读取或写入时清理超过 7 天的记录，最多保留 256 次推理尝试；一次请求可能包含多次尝试。不记录对话原文、账号或自由错误文本。仅在你点击导出并选择保存位置后写出 JSON，应用不会分享或上传。</string>
+    <string name="diagnostics_quality_notice">格式检查通过不等于内容正确；完成次数也不代表回答质量。停止及中断的尝试单独计入“其他”，未记录的进行中任务不计入统计。</string>
+    <string name="diagnostics_counts">总尝试：%1$d\n完成：%2$d\n失败：%3$d\n取消：%4$d\n其他（停止或中断）：%5$d</string>
+    <string name="diagnostics_loading">正在处理…</string>
+    <string name="diagnostics_ready">统计为最近一次读取的结果，可点击刷新。</string>
+    <string name="diagnostics_waiting">等待选择保存位置。取消保存不会导出数据。</string>
+    <string name="diagnostics_refresh">刷新 / 重试读取</string>
+    <string name="diagnostics_export">导出 JSON</string>
+    <string name="diagnostics_clear">清理本设备诊断记录</string>
+    <string name="diagnostics_clear_confirm">清理本设备保留的诊断记录？待导出的快照也会失效。已导出的文件需自行删除。</string>
+    <string name="diagnostics_close">关闭</string>
+    <string name="diagnostics_cancel">取消</string>
+    <string name="diagnostics_error_load">无法读取诊断记录，请重试；也可清理损坏的记录。</string>
+    <string name="diagnostics_error_clear">清理失败，请重试。待导出快照已失效。</string>
+    <string name="diagnostics_error_export">导出失败，请重新点击导出。若已生成不完整文件，请自行删除。</string>
+    <string name="diagnostics_error_expired">导出快照已失效，请重新点击导出并选择保存位置。</string>
+</resources>
