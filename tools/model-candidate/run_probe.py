@@ -217,16 +217,32 @@ class Host:
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, **options)
         try:
             stdout, stderr = process.communicate(timeout=remaining)
-        except subprocess.TimeoutExpired as error:
-            (self.output / label).write_bytes((error.output or b"") + (error.stderr or b""))
-            if os.name == "nt":
-                subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                               capture_output=True, timeout=5, check=False)
-            else:
-                os.killpg(process.pid, signal.SIGKILL)
-            stdout, stderr = process.communicate(timeout=5)
-            (self.output / label).write_bytes(stdout + stderr)
-            raise TimeoutError() from None
+        except (subprocess.TimeoutExpired, KeyboardInterrupt) as error:
+            stdout = getattr(error, "output", None) or b""
+            stderr = getattr(error, "stderr", None) or b""
+            try:
+                try:
+                    if os.name == "nt":
+                        subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                                       capture_output=True, timeout=5, check=False)
+                    else:
+                        try:
+                            os.killpg(process.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                finally:
+                    if process.poll() is None:
+                        process.kill()
+                    try:
+                        stdout, stderr = process.communicate(timeout=5)
+                    except subprocess.TimeoutExpired as pending:
+                        stdout, stderr = pending.output or b"", pending.stderr or b""
+                        raise
+            finally:
+                (self.output / label).write_bytes(stdout + stderr)
+            if isinstance(error, subprocess.TimeoutExpired):
+                raise TimeoutError() from None
+            raise
         (self.output / label).write_bytes(stdout + stderr)
         if check:
             require(process.returncode == 0)

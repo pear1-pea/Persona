@@ -81,6 +81,55 @@ class MemoryCurationInstrumentedTest {
         assertNotNull(dao.preferences("foreign"))
     }
 
+    @Test fun editingSummaryRetainsItAndSourcesWhileExcludingOldHistory() = runBlocking {
+        db.messageDao().insertMessage(MessageEntity("second", "p", "owner", "我正在学习 Kotlin", true, 2))
+        val original = MemoryEntity("summary-edit", "owner", "p", "FACT", "原始摘要", createdAt = 1, updatedAt = 1)
+        val sources = listOf(
+            MemorySummarySourceEntity(original.id, "s", "owner", "first-hash"),
+            MemorySummarySourceEntity(original.id, "second", "owner", "second-hash")
+        )
+        db.memoryDao().insert(original)
+        dao.addSummarySources(sources)
+        db.memoryDao().insert(original.copy(id = "summary-other"))
+        dao.addSummarySources(sources.map { it.copy(memoryId = "summary-other") })
+
+        val edited = db.memoryDao().saveMemory(original.copy(content = "用户编辑的摘要", updatedAt = 3), 1)
+
+        assertEquals("用户编辑的摘要", edited.content)
+        assertFalse(edited.deleted)
+        assertFalse(edited.cloudAllowed)
+        assertEquals(2, edited.revision)
+        assertEquals(sources.sortedBy { it.sourceMessageId }, dao.summarySources("owner", original.id))
+        for (id in listOf("s", "second")) {
+            assertTrue(requireNotNull(db.messageDao().getMessageById(id, "owner")).excludeFromHistory)
+        }
+        assertTrue(requireNotNull(db.memoryDao().findOwned("summary-other", "owner")).deleted)
+
+        db.close()
+        db = Room.databaseBuilder(context, AppDatabase::class.java, name)
+            .addCallback(DatabaseModule.memoryIntegrityCallback).build()
+        assertEquals(edited, db.memoryDao().findOwned(original.id, "owner"))
+        assertEquals(sources.sortedBy { it.sourceMessageId }, dao.summarySources("owner", original.id))
+        db.messageDao().updateMessageContent("second", "owner", "修改后的来源", "NORMAL")
+        assertTrue(requireNotNull(db.memoryDao().findOwned(original.id, "owner")).deleted)
+        assertTrue(dao.summarySources("owner", original.id).isEmpty())
+    }
+
+    @Test fun staleSummaryEditLeavesContentSourcesAndHistoryUntouched() = runBlocking {
+        val original = MemoryEntity("summary-stale", "owner", "p", "FACT", "原始摘要", createdAt = 1, updatedAt = 1)
+        val sources = listOf(MemorySummarySourceEntity(original.id, "s", "owner", "hash"))
+        db.memoryDao().insert(original)
+        dao.addSummarySources(sources)
+
+        assertTrue(runCatching {
+            db.memoryDao().saveMemory(original.copy(content = "过期编辑"), 2)
+        }.isFailure)
+
+        assertEquals(original, db.memoryDao().findOwned(original.id, "owner"))
+        assertEquals(sources, dao.summarySources("owner", original.id))
+        assertFalse(requireNotNull(db.messageDao().getMessageById("s", "owner")).excludeFromHistory)
+    }
+
     private fun candidate(id: String) = MemoryCandidateEntity(id, "owner", "p", "s", "hash",
         "我喜欢简短回答", "PREFERENCE", "style", "rule-v1", true, "PENDING", null, 1)
 }

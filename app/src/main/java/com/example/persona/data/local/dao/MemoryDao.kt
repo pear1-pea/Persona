@@ -6,6 +6,7 @@ import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
 import com.example.persona.data.local.entity.MemoryEntity
+import com.example.persona.data.local.entity.MemorySummarySourceEntity
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -91,6 +92,15 @@ abstract class MemoryDao {
     @Query("DELETE FROM memories WHERE ownerId = :ownerId AND personaId = :personaId")
     abstract suspend fun deleteByPersona(ownerId: String, personaId: String)
 
+    @Query("SELECT * FROM memory_summary_sources WHERE ownerId = :ownerId AND memoryId = :memoryId ORDER BY sourceMessageId")
+    abstract suspend fun summarySourcesForEdit(ownerId: String, memoryId: String): List<MemorySummarySourceEntity>
+
+    @Query("DELETE FROM memory_summary_sources WHERE ownerId = :ownerId AND memoryId = :memoryId")
+    abstract suspend fun detachSummarySourcesForEdit(ownerId: String, memoryId: String)
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    abstract suspend fun restoreSummarySourcesAfterEdit(sources: List<MemorySummarySourceEntity>)
+
     @Transaction
     open suspend fun saveMemory(memory: MemoryEntity, expectedRevision: Int?): MemoryEntity {
         require(memory.content.isNotBlank() && memory.content.length <= 400)
@@ -112,6 +122,12 @@ abstract class MemoryDao {
                 memory.cloudAllowed
             ) == 1) { "Memory is unavailable or its revision changed" }
         }
+        val retainedSources = if (original != null) summarySourcesForEdit(memory.ownerId, memory.id) else emptyList()
+        if (retainedSources.isNotEmpty()) {
+            // Keep this edit's provenance out of history-invalidation triggers only
+            // inside this transaction. Other summaries must still be invalidated.
+            detachSummarySourcesForEdit(memory.ownerId, memory.id)
+        }
         if (sourcePersona != null) {
             check(excludeSourceFromHistory(
                 requireNotNull(memory.sourceMessageId), memory.ownerId, sourcePersona
@@ -121,7 +137,10 @@ abstract class MemoryDao {
         if (original != null && original.personaId != memory.personaId) {
             excludeScopeFromHistory(memory.ownerId, original.personaId)
         }
-        return checkNotNull(findOwned(memory.id, memory.ownerId))
+        if (retainedSources.isNotEmpty()) restoreSummarySourcesAfterEdit(retainedSources)
+        return checkNotNull(findOwned(memory.id, memory.ownerId)).also {
+            check(!it.deleted) { "Saved memory was invalidated" }
+        }
     }
 
     @Transaction

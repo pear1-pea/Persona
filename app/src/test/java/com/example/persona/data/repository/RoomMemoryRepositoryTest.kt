@@ -273,6 +273,8 @@ class RoomMemoryRepositoryTest {
         assertEquals("p", edited.personaId)
         assertNull(edited.sourceMessageId)
         assertEquals(2, edited.revision)
+        assertEquals("edited", edited.content)
+        assertFalse(edited.deleted)
     }
 
     @Test

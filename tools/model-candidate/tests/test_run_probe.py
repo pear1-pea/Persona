@@ -7,6 +7,7 @@ import io
 import json
 import os
 from pathlib import Path, PureWindowsPath
+import signal
 import subprocess
 import sys
 import tempfile
@@ -356,6 +357,80 @@ class RunProbeTest(unittest.TestCase):
         self.assertIn(b"private-model-raw", (output / "privateinstrumentation.log").read_bytes())
         with self.assertRaises(TimeoutError):
             driver.read_file(self.args.bundle, deadline=time.monotonic() - 1)
+
+    def test_keyboard_interrupt_reaps_command_and_preserves_partial_output(self):
+        output = driver.new_output(self.args)
+        host = driver.Host(self.args, output, time.monotonic() + 10)
+        ready = self.base / "command-ready"
+        command = [sys.executable, "-u", "-c",
+                   "import pathlib, subprocess, sys, time; "
+                   "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); "
+                   f"print('private-started'); pathlib.Path({str(ready)!r}).touch(); time.sleep(30)"]
+        children = []
+        popen = subprocess.Popen
+
+        def launch(*args, **kwargs):
+            child = popen(*args, **kwargs)
+            if args[0] != command:
+                return child
+            children.append(child)
+            communicate = child.communicate
+            first = True
+
+            def interrupted(*args, **kwargs):
+                nonlocal first
+                if first:
+                    first = False
+                    deadline = time.monotonic() + 5
+                    while not ready.exists() and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                    self.assertTrue(ready.exists(), "Synthetic command never became ready")
+                    try:
+                        communicate(timeout=0.05)
+                    except subprocess.TimeoutExpired:
+                        raise KeyboardInterrupt() from None
+                    self.fail("Synthetic command ended before interruption")
+                return communicate(*args, **kwargs)
+
+            child.communicate = interrupted
+            return child
+
+        try:
+            with mock.patch.object(driver.subprocess, "Popen", side_effect=launch):
+                with self.assertRaises(KeyboardInterrupt):
+                    host.command(command, "private-interrupted.log")
+            self.assertIsNotNone(children[0].poll(), "Interrupted command is still running")
+            self.assertIn(b"private-started", (output / "private-interrupted.log").read_bytes())
+        finally:
+            for child in children:
+                if os.name == "nt":
+                    subprocess.run(["taskkill", "/PID", str(child.pid), "/T", "/F"],
+                                   capture_output=True, timeout=5, check=False)
+                    if child.poll() is None:
+                        child.kill()
+                else:
+                    try:
+                        os.killpg(child.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                child.communicate(timeout=5)
+
+    def test_windows_interrupt_kills_owned_process_tree_before_collecting_log(self):
+        output = driver.new_output(self.args)
+        host = driver.Host(self.args, output, time.monotonic() + 10)
+        child = mock.Mock(pid=123)
+        child.communicate.side_effect = [KeyboardInterrupt(), (b"partial out", b"partial err")]
+        child.poll.return_value = 1
+        with mock.patch.object(driver.os, "name", "nt"), \
+                mock.patch.object(driver.subprocess, "CREATE_NEW_PROCESS_GROUP", 512, create=True), \
+                mock.patch.object(driver.subprocess, "Popen", return_value=child) as popen, \
+                mock.patch.object(driver.subprocess, "run") as kill:
+            with self.assertRaises(KeyboardInterrupt):
+                host.command(["synthetic-build"], "private-interrupted.log")
+        self.assertEqual(512, popen.call_args.kwargs["creationflags"])
+        kill.assert_called_once_with(["taskkill", "/PID", "123", "/T", "/F"],
+                                     capture_output=True, timeout=5, check=False)
+        self.assertEqual(b"partial outpartial err", (output / "private-interrupted.log").read_bytes())
 
     def test_gradle_arguments_are_a_list_with_intact_property(self):
         command = driver.build_command(self.repo)

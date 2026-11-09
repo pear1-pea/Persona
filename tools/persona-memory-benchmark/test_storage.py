@@ -103,6 +103,54 @@ class StorageTests(unittest.TestCase):
         self.assertEqual((1, '', 0), tuple(row))
         self.assertEqual(0, self.db.execute('SELECT count(*) FROM memory_summary_sources').fetchone()[0])
 
+    def test_summary_edit_provenance_survives_history_exclusion_but_not_source_edits(self):
+        self.summary()
+        self.memory('other-summary')
+        self.db.execute("INSERT INTO memory_summary_sources VALUES ('other-summary','source','owner','hash')")
+        self.memory('foreign-summary', 'foreign')
+        self.db.execute("INSERT INTO memory_summary_sources VALUES ('foreign-summary','foreign-source','foreign','hash')")
+        self.db.commit()
+        q = queries('app/src/main/java/com/example/persona/data/local/dao/MemoryDao.kt')
+        params = dict(ownerId='owner', memoryId='summary')
+        sources = list(self.db.execute(q['summarySourcesForEdit'], params))
+        with self.db:
+            changed = self.db.execute(q['updateIfRevision'], dict(
+                id='summary', ownerId='owner', expectedRevision=1, personaId='persona',
+                type='FACT', content='编辑后的摘要', sourceMessageId=None, now=2,
+                expiresAt=None, cloudAllowed=0)).rowcount
+            self.assertEqual(1, changed)
+            self.db.execute(q['detachSummarySourcesForEdit'], params)
+            self.db.execute(q['excludeScopeFromHistory'], dict(ownerId='owner', personaId='persona'))
+            self.db.executemany('INSERT INTO memory_summary_sources VALUES (?,?,?,?)', sources)
+        self.assertEqual(('编辑后的摘要', 0, 2), tuple(self.db.execute(
+            "SELECT content,deleted,revision FROM memories WHERE id='summary'").fetchone()))
+        self.assertEqual([tuple(row) for row in sources], [tuple(row) for row in
+            self.db.execute(q['summarySourcesForEdit'], params)])
+        self.assertEqual(1, self.db.execute("SELECT deleted FROM memories WHERE id='other-summary'").fetchone()[0])
+        self.assertEqual(0, self.db.execute("SELECT deleted FROM memories WHERE id='foreign-summary'").fetchone()[0])
+        self.assertTrue(all(row[0] == 1 for row in self.db.execute(
+            "SELECT excludeFromHistory FROM messages WHERE ownerId='owner'")))
+        self.db.execute("UPDATE messages SET content='changed after edit' WHERE id='second'")
+        self.assertEqual(('', 1), tuple(self.db.execute(
+            "SELECT content,deleted FROM memories WHERE id='summary'").fetchone()))
+        self.assertEqual([], list(self.db.execute(q['summarySourcesForEdit'], params)))
+
+    def test_failed_summary_edit_transaction_restores_sources_and_history(self):
+        self.summary()
+        self.db.commit()
+        q = queries('app/src/main/java/com/example/persona/data/local/dao/MemoryDao.kt')
+        params = dict(ownerId='owner', memoryId='summary')
+        sources = list(self.db.execute(q['summarySourcesForEdit'], params))
+        with self.assertRaises(RuntimeError):
+            with self.db:
+                self.db.execute(q['detachSummarySourcesForEdit'], params)
+                self.db.execute(q['excludeScopeFromHistory'], dict(ownerId='owner', personaId='persona'))
+                raise RuntimeError('Injected edit failure')
+        self.assertEqual([tuple(row) for row in sources], [tuple(row) for row in
+            self.db.execute(q['summarySourcesForEdit'], params)])
+        self.assertTrue(all(row[0] == 0 for row in self.db.execute(
+            "SELECT excludeFromHistory FROM messages WHERE ownerId='owner'")))
+
     def test_memory_deletion_invalidates_linked_candidates_and_tasks(self):
         self.memory('saved')
         self.db.execute("UPDATE memories SET sourceMessageId='source' WHERE id='saved'")
