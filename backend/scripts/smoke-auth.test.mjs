@@ -77,7 +77,7 @@ for (const stall of ["headers", "body"]) {
 }
 
 test("invalid second registration cannot become anonymous isolation success", async t => {
-  for (const invalidToken of [{}, { token: null }, { token: "" }, { token: " " }, { token: 2 }, { token: "bad\r\ntoken" }]) {
+  for (const invalidToken of [{}, { token: null }, { token: "" }, { token: " " }, { token: 2 }, { token: "bad\r\ntoken" }, { token: "bad\n" }, { token: "bad\r\n" }, { token: "bad\u2028" }]) {
     const f = await fixture(t, { invalidToken })
     await assert.rejects(f.run(), /registration.*token/i)
     assert.deepEqual(f.deleted, ["Bearer 1"])

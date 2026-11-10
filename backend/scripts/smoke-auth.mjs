@@ -57,7 +57,7 @@ export async function runSmoke({ baseUrl = process.env.PERSONA_BACKEND_BASE_URL 
 
   async function register(email, passwordValue) {
     const user = await request("POST", "/api/auth/register", null, { email, password: passwordValue })
-    if (!user || typeof user.token !== "string" || !/^[A-Za-z0-9._~+/-]+=*$/.test(user.token)) {
+    if (!user || typeof user.token !== "string" || user.token.trim() !== user.token || !/^[A-Za-z0-9._~+/-]+=*$/.test(user.token)) {
       throw new Error("Invalid registration token")
     }
     return user
