@@ -1,0 +1,51 @@
+name: Dependency security report
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 1 * * 2'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+    working-directory: backend
+
+jobs:
+  audit:
+    name: Production dependency audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - name: Install and identify runtime
+        run: |
+          mkdir -p ../build/ci/security
+          python3 ../tools/ci/environment.py --node --output ../build/ci/security/environment.json
+          npm ci 2>&1 | tee ../build/ci/security/install.log
+      - name: Audit production dependencies
+        run: |
+          status=0
+          npm audit --omit=dev --audit-level=high --json > ../build/ci/security/audit.json || status=$?
+          python3 ../tools/ci/summarize_audit.py ../build/ci/security/audit.json
+          exit "$status"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: security-reports
+          path: build/ci/security/
+          if-no-files-found: warn
+          retention-days: 14

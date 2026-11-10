@@ -5,10 +5,22 @@ on:
   push:
     branches: [master]
   workflow_dispatch:
+    inputs:
+      run_windows:
+        description: Validate the independent Windows workflow
+        type: boolean
+        default: false
+      run_failure_probes:
+        description: Verify an actual lint failure and subsequent recovery
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
   run:
@@ -17,54 +29,83 @@ defaults:
 jobs:
   inference-eval:
     name: Inference telemetry Python contract (synthetic, no LLM)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.11'
       - name: Run inference telemetry contract tests
-        run: python -B -m unittest discover -s tools/inference-eval/tests -v
+        run: |
+          mkdir -p build/ci/inference-eval
+          python tools/ci/environment.py --output build/ci/inference-eval/environment.json
+          python -B -m unittest discover -s tools/inference-eval/tests -v 2>&1 | tee build/ci/inference-eval/tests.log
       - name: Check synthetic CLI examples
-        run: python -B tools/inference-eval/check_fixture.py
+        run: python -B tools/inference-eval/check_fixture.py 2>&1 | tee build/ci/inference-eval/fixtures.log
       - name: Check candidate preparation contracts (synthetic, no model)
-        run: python -B -m unittest discover -s tools/model-candidate/tests -v
+        run: python -B -m unittest discover -s tools/model-candidate/tests -v 2>&1 | tee build/ci/inference-eval/candidate.log
       - name: Check Release artifact inspector contracts
-        run: python -B -m unittest discover -s tools/release/tests -v
+        run: python -B -m unittest discover -s tools/release/tests -v 2>&1 | tee build/ci/inference-eval/release.log
+      - name: Check CI failure-path contracts
+        run: python -B -m unittest discover -s tools/ci/tests -v 2>&1 | tee build/ci/inference-eval/ci-contracts.log
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: inference-contract-logs
+          path: build/ci/inference-eval/
+          retention-days: 14
+          if-no-files-found: warn
 
   android:
     name: Android build + unit tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
         with:
           distribution: temurin
           java-version: '17'
 
-      - uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
         with:
           packages: platform-tools
+          cmdline-tools-version: '12266719'
 
       - name: Install Android SDK packages
         run: |
-          yes | sdkmanager --licenses > /dev/null || true
           sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.11718014" "cmake;3.22.1"
 
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
 
       - name: Build and test
         run: |
           mkdir -p build/ci/android
           chmod +x gradlew
+          python3 tools/ci/environment.py --android --output build/ci/android/environment.json
           ./gradlew assembleDebug assembleDebugAndroidTest testDebugUnitTest --stacktrace --console=plain 2>&1 | tee build/ci/android/gradle.log
 
       - name: Compile unsigned Release and test Release guards
         run: |
           ./gradlew assembleRelease bundleRelease testReleaseUnitTest --stacktrace --console=plain 2>&1 | tee build/ci/android/release-gradle.log
+
+      - name: Lint Debug
+        run: ./gradlew lintDebug --stacktrace --console=plain 2>&1 | tee build/ci/android/lint.log
+
+      - name: Verify real lint failure and recovery
+        if: github.event_name == 'workflow_dispatch' && inputs.run_failure_probes
+        run: bash scripts/ci-probe-lint.sh
+
+      - name: Validate Debug and Release test evidence
+        if: ${{ !cancelled() }}
+        run: |
+          python3 tools/ci/check_junit.py app/build/test-results/testDebugUnitTest app/build/test-results/testReleaseUnitTest --output build/ci/android/junit-summary.json
 
       - name: Inspect Release native compatibility
         run: |
@@ -74,7 +115,7 @@ jobs:
           tail -n 1 build/ci/android/release-zipalign.log
 
       - name: Retain unsigned Release for inspection
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-unsigned-not-for-installation
           path: |
@@ -83,7 +124,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: android-reports
@@ -91,82 +132,95 @@ jobs:
             app/build/reports/tests/
             app/build/test-results/
             app/build/outputs/logs/
+            app/build/reports/lint-results-debug.*
             build/ci/android/
-          if-no-files-found: ignore
+          if-no-files-found: warn
+          retention-days: 14
 
   backend:
     name: Backend typecheck + unit tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     defaults:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: backend/package-lock.json
 
       - run: mkdir -p ../build/ci/backend
-      - run: node --version && npm --version
+      - run: python3 ../tools/ci/environment.py --node --output ../build/ci/backend/environment.json
       - run: npm ci 2>&1 | tee ../build/ci/backend/install.log
       - run: npm audit --omit=dev --audit-level=high 2>&1 | tee ../build/ci/backend/audit.log
       - run: npm run typecheck 2>&1 | tee ../build/ci/backend/typecheck.log
       - run: npm test 2>&1 | tee ../build/ci/backend/tests.log
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: backend-logs
           path: build/ci/backend/
-          if-no-files-found: ignore
+          if-no-files-found: warn
+          retention-days: 14
 
   packager:
     name: Model packager tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.11'
       - run: mkdir -p build/ci/packager
+      - run: python tools/ci/environment.py --output build/ci/packager/environment.json
       - run: python -B -m unittest discover -s tools/model-packager/tests -v 2>&1 | tee build/ci/packager/tests.log
       - run: python -B tools/model-packager/validate_package.py tools/model-packager/examples/minimal-fixture --require-ready 2>&1 | tee build/ci/packager/validation.log
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: packager-logs
           path: build/ci/packager/
-          if-no-files-found: ignore
+          if-no-files-found: warn
+          retention-days: 14
 
   persona-eval:
     name: Persona synthetic evaluation contract (no LLM)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.11'
       - run: mkdir -p build/ci/persona-eval
+      - run: python tools/ci/environment.py --output build/ci/persona-eval/environment.json
       - run: python -B tools/persona-eval/evaluate.py validate 2>&1 | tee build/ci/persona-eval/schema.log
       - run: python -B -m unittest discover -s tools/persona-eval/tests -v 2>&1 | tee build/ci/persona-eval/tests.log
       - run: python -B tools/persona-eval/evaluate.py reference --split all 2>&1 | tee build/ci/persona-eval/reference.log
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: persona-eval-logs
           path: build/ci/persona-eval/
-          if-no-files-found: ignore
+          if-no-files-found: warn
+          retention-days: 14
 
   backend-integration:
     name: Backend chat integration + auth/persona smoke
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     services:
       postgres:
@@ -187,9 +241,11 @@ jobs:
       PORT: 8080
       TRUST_PROXY: 'false'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -202,20 +258,14 @@ jobs:
         working-directory: backend
         run: |
           mkdir -p ../build/ci/backend-integration
-          node --version
-          npm --version
+          python3 ../tools/ci/environment.py --node --output ../build/ci/backend-integration/environment.json
           npm ci 2>&1 | tee ../build/ci/backend-integration/install.log
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f schema.sql 2>&1 | tee ../build/ci/backend-integration/schema.log
           TEST_DATABASE_URL="$DATABASE_URL" npm run test:integration 2>&1 | tee ../build/ci/backend-integration/chat-tests.log
           npx tsx src/server.ts > ../build/ci/backend-integration/server.log 2>&1 &
           SERVER_PID=$!
-          trap "kill $SERVER_PID" EXIT
-          for i in {1..30}; do
-            if curl -fsS http://127.0.0.1:8080/healthz > /dev/null; then
-              break
-            fi
-            sleep 1
-          done
+          trap 'kill "$SERVER_PID" 2>/dev/null || true; wait "$SERVER_PID" 2>/dev/null || true' EXIT
+          bash ../scripts/ci-wait-http.sh http://127.0.0.1:8080/healthz "$SERVER_PID" 30 1 2>&1 | tee ../build/ci/backend-integration/readiness.log
           PERSONA_BACKEND_BASE_URL=http://127.0.0.1:8080 npm run smoke 2>&1 | tee ../build/ci/backend-integration/smoke.log
 
       - name: Verify Node 24 backend container
@@ -250,67 +300,15 @@ jobs:
           test "$ready" = true
           PERSONA_BACKEND_BASE_URL=http://127.0.0.1:8081 npm run smoke 2>&1 | tee "$logs/container-smoke.log"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: backend-integration-logs
           path: build/ci/backend-integration/
-          if-no-files-found: ignore
+          if-no-files-found: warn
+          retention-days: 14
 
   android-windows:
-    name: Windows build + unit tests (manual)
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: windows-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - uses: android-actions/setup-android@v3
-        with:
-          packages: platform-tools
-
-      - name: Install Android SDK packages
-        shell: pwsh
-        run: |
-          ("y`n" * 50) | sdkmanager --licenses
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-          sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.11718014" "cmake;3.22.1"
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-
-      - uses: gradle/actions/setup-gradle@v4
-
-      - name: Build and JVM tests
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          New-Item -ItemType Directory -Path build/ci/windows -Force | Out-Null
-          $failed = $false
-          foreach ($task in @('assembleDebug', 'assembleDebugAndroidTest', 'testDebugUnitTest')) {
-            $LASTEXITCODE = $null
-            try {
-              $ErrorActionPreference = 'Continue'
-              & .\gradlew.bat $task --stacktrace --console=plain 2>&1 | Tee-Object -FilePath "build/ci/windows/$task.log"
-              if ($null -eq $LASTEXITCODE -or $LASTEXITCODE -ne 0) { $failed = $true }
-            } catch {
-              $failed = $true
-            } finally {
-              $ErrorActionPreference = 'Stop'
-            }
-          }
-          if ($failed) { exit 1 }
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: windows-reports
-          path: |
-            build/ci/windows/
-            app/build/reports/tests/
-            app/build/test-results/
-            app/build/outputs/logs/
-          if-no-files-found: ignore
+    name: Windows validation (manual)
+    if: github.event_name == 'workflow_dispatch' && inputs.run_windows
+    uses: ./.github/workflows/windows.yml
