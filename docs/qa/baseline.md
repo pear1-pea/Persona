@@ -27,7 +27,7 @@ For an already-running isolated backend, set `PERSONA_BACKEND_BASE_URL` and add
 | Android SDK | platform 36, build-tools 36.0.0 | `sdkmanager --list_installed` |
 | NDK | `27.0.11718014` | `sdkmanager --list_installed` |
 | CMake | 3.22.1 | `sdkmanager --list_installed` |
-| Node | 20 LTS (or newer) | `node -v` |
+| Node | 24; exact version in root `.nvmrc` | `node -v` |
 | PostgreSQL | 16 (local or Docker) | `psql --version` |
 
 `local.properties` (repository root, **never commit**):

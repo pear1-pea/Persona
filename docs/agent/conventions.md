@@ -18,7 +18,7 @@
 
 ## Backend
 
-- TypeScript, ESM (`"type": "module"`), Node >= 20.
+- TypeScript, ESM (`"type": "module"`), Node 24 (root `.nvmrc`).
 - Validate request input with `zod`.
 - Keep the DeepSeek model allowlist, token limits, and rate limits in place.
 - Never log `Authorization`, full prompts, or full model responses.

@@ -106,11 +106,12 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: backend/package-lock.json
 
       - run: mkdir -p ../build/ci/backend
+      - run: node --version && npm --version
       - run: npm ci 2>&1 | tee ../build/ci/backend/install.log
       - run: npm audit --omit=dev --audit-level=high 2>&1 | tee ../build/ci/backend/audit.log
       - run: npm run typecheck 2>&1 | tee ../build/ci/backend/typecheck.log
@@ -190,7 +191,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: backend/package-lock.json
 
@@ -201,6 +202,8 @@ jobs:
         working-directory: backend
         run: |
           mkdir -p ../build/ci/backend-integration
+          node --version
+          npm --version
           npm ci 2>&1 | tee ../build/ci/backend-integration/install.log
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f schema.sql 2>&1 | tee ../build/ci/backend-integration/schema.log
           TEST_DATABASE_URL="$DATABASE_URL" npm run test:integration 2>&1 | tee ../build/ci/backend-integration/chat-tests.log
@@ -214,6 +217,38 @@ jobs:
             sleep 1
           done
           PERSONA_BACKEND_BASE_URL=http://127.0.0.1:8080 npm run smoke 2>&1 | tee ../build/ci/backend-integration/smoke.log
+
+      - name: Verify Node 24 backend container
+        working-directory: backend
+        run: |
+          logs=../build/ci/backend-integration
+          node_version=$(cat ../.nvmrc)
+          docker pull "node:${node_version}-bookworm-slim" 2>&1 | tee "$logs/container-base.log"
+          docker image inspect "node:${node_version}-bookworm-slim" --format '{{json .RepoDigests}}' > "$logs/container-base-digest.json"
+          docker build --tag persona-backend:ci . 2>&1 | tee "$logs/container-build.log"
+          cleanup() {
+            docker logs persona-backend-ci > "$logs/container-server.log" 2>&1 || true
+            docker rm --force persona-backend-ci > /dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          docker run --detach --name persona-backend-ci --network host \
+            --env DATABASE_URL --env TRUST_PROXY --env PORT=8081 persona-backend:ci
+          docker exec persona-backend-ci node --version | tee "$logs/container-node.log"
+          docker exec persona-backend-ci npm --version | tee "$logs/container-npm.log"
+          test "$(docker exec persona-backend-ci node --version)" = "v${node_version}"
+          ready=false
+          for i in {1..30}; do
+            if curl --max-time 2 -fsS http://127.0.0.1:8081/healthz > /dev/null; then
+              ready=true
+              break
+            fi
+            if [ "$(docker inspect --format '{{.State.Running}}' persona-backend-ci)" != true ]; then
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" = true
+          PERSONA_BACKEND_BASE_URL=http://127.0.0.1:8081 npm run smoke 2>&1 | tee "$logs/container-smoke.log"
 
       - uses: actions/upload-artifact@v4
         if: always()

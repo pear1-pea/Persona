@@ -123,7 +123,7 @@ deleting notes cancels stale generation; database observations also catch source
 
 ## Backend (`backend/`)
 
-Node >= 20, TypeScript (ESM), PostgreSQL. All routes live in `src/server.ts`:
+Node 24 (root `.nvmrc`), TypeScript (ESM), PostgreSQL. All routes live in `src/server.ts`:
 
 - Email/password auth with Argon2id; only a hash of the session token is stored
 - Persona CRUD with server-side ownership checks

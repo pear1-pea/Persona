@@ -12,7 +12,7 @@ Kilo Code). Keep this file short and put details in `docs/`; load them on demand
 - Architecture: MVVM + repository layers, Hilt DI, Coroutines/Flow, ViewBinding
 - Local AI: MNN-LLM (Qwen2.5) via JNI; Cloud AI: DeepSeek through the backend proxy
 - Storage: Room + Paging 3
-- Backend: Node >= 20 + TypeScript + PostgreSQL (`backend/`)
+- Backend: Node 24 (exact version in `.nvmrc`) + TypeScript + PostgreSQL (`backend/`)
 
 ## Commands
 
