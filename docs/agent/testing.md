@@ -72,19 +72,47 @@ smoke. Without `TEST_DATABASE_URL` the database tests skip, which is not accepta
 
 `.github/workflows/ci.yml` runs:
 
-- Android `assembleDebug` + `assembleDebugAndroidTest` + `testDebugUnitTest`.
+- Android Debug/test APKs, unsigned Release APK/AAB, both JVM variants, and `lintDebug`.
 - Backend `npm run typecheck` + `npm test`.
 - Backend Postgres service + `npm run test:integration` + `npm run smoke`.
 - Model packager `python -m unittest discover`.
-- Synthetic Persona evaluation schema, Python tests and reference contracts
-  (candidate workflow; no P2 remote run yet).
-- A manual `workflow_dispatch` Windows build and JVM tests.
+- Synthetic Persona evaluation schema, Python tests and reference contracts.
+- CI helper contracts for missing/failed reports, readiness and audit failures.
+- An independent manual Windows workflow in `.github/workflows/windows.yml`.
 
-Available logs and reports are retained on both success and failure. Configuration
+Workflow permissions are explicitly read-only and checkout credentials are not
+persisted. Actions use verified upstream release SHAs, with Dependabot updates for
+Actions, backend npm dependencies and Docker. Gradle 8.13 distribution downloads are
+checked against the official SHA-256; setup-gradle also validates the Wrapper JAR.
+
+Lint errors fail the build; warnings remain visible in HTML/XML reports.
+Debug and Release JUnit directories must each contain executed tests with no
+failures/errors. Zero tests, all-skipped variants, missing/malformed XML and
+inconsistent counts fail validation. Counts are reported without a fixed historical
+threshold. See [`tools/ci/README.md`](../../tools/ci/README.md).
+
+Available logs and reports are retained for 14 days on both success and failure
+(unsigned Release inspection artifacts: 7 days). Environment JSON records source,
+OS, architecture and actual selected tool versions. Configuration
 inspection alone does not establish that a remote workflow passed.
 
-The Windows build is manual because it is slower and primarily validates the local
-NDK/CMake path; it is not required for every pull request.
+The Windows build is manual because it is slower and validates the Windows
+NDK/CMake path; it is not required for every pull request and does not run on the
+developer's PC. After the workflow exists on master, dispatch `windows.yml` directly.
+Before its first merge, dispatch existing `ci.yml` on the candidate branch with
+`run_windows=true`; it calls the same local reusable Windows workflow. Set
+`run_failure_probes=true` in that candidate run to inject a temporary Android
+NewApi lint error, require actual lint failure, remove the fixture, and require
+lint recovery. Keep both failure and recovery logs. The probe is opt-in and never
+changes a committed source file or packaged APK.
+The same failure-probe run calls the standalone security report for pre-merge
+validation. Host smoke starts Node directly so its cleanup PID owns the server,
+rather than an npm/npx wrapper.
+
+`security.yml` audits production dependencies manually and every Tuesday at 01:00
+UTC (09:00 Asia/Shanghai). High/critical findings and unavailable/invalid scans fail;
+the regular backend job retains its existing blocking audit. No real upstream chat
+keys are needed. Dependabot does not auto-merge updates.
 
 ## Baseline
 
