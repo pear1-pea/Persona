@@ -105,6 +105,9 @@ Before its first merge, dispatch existing `ci.yml` on the candidate branch with
 NewApi lint error, require actual lint failure, remove the fixture, and require
 lint recovery. Keep both failure and recovery logs. The probe is opt-in and never
 changes a committed source file or packaged APK.
+The same failure-probe run calls the standalone security report for pre-merge
+validation. Host smoke starts Node directly so its cleanup PID owns the server,
+rather than an npm/npx wrapper.
 
 `security.yml` audits production dependencies manually and every Tuesday at 01:00
 UTC (09:00 Asia/Shanghai). High/critical findings and unavailable/invalid scans fail;

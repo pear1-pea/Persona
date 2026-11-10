@@ -262,7 +262,7 @@ jobs:
           npm ci 2>&1 | tee ../build/ci/backend-integration/install.log
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f schema.sql 2>&1 | tee ../build/ci/backend-integration/schema.log
           TEST_DATABASE_URL="$DATABASE_URL" npm run test:integration 2>&1 | tee ../build/ci/backend-integration/chat-tests.log
-          npx tsx src/server.ts > ../build/ci/backend-integration/server.log 2>&1 &
+          node --import tsx src/server.ts > ../build/ci/backend-integration/server.log 2>&1 &
           SERVER_PID=$!
           trap 'kill "$SERVER_PID" 2>/dev/null || true; wait "$SERVER_PID" 2>/dev/null || true' EXIT
           bash ../scripts/ci-wait-http.sh http://127.0.0.1:8080/healthz "$SERVER_PID" 30 1 2>&1 | tee ../build/ci/backend-integration/readiness.log
@@ -312,3 +312,8 @@ jobs:
     name: Windows validation (manual)
     if: github.event_name == 'workflow_dispatch' && inputs.run_windows
     uses: ./.github/workflows/windows.yml
+
+  security-validation:
+    name: Security report validation (manual)
+    if: github.event_name == 'workflow_dispatch' && inputs.run_failure_probes
+    uses: ./.github/workflows/security.yml
