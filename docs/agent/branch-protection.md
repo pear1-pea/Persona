@@ -25,6 +25,11 @@ Inspect the live policy with:
 gh api repos/pear1-pea/Persona/branches/master/protection
 ```
 
+The 2026-11-10 acceptance PR #16 recorded a real failed required helper-test check
+and GitHub BLOCKED merge status before the owned negative fixture was removed.
+Recovery evidence must show all required checks successful and CLEAN merge status;
+the PR's check history is the authoritative run record.
+
 Validation uses an isolated acceptance branch and a temporary failing unittest in
 the required CI helper suite. Only the acceptance branch contains the negative
 fixture. Capture the failed required check and blocked PR merge state, remove the

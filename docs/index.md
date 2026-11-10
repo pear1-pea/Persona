@@ -17,6 +17,7 @@ Index of all project documentation. The agent entry point is
 - [Conventions](agent/conventions.md) — Kotlin/Android style, backend rules, security
 - [Build](agent/build.md) — toolchain, `local.properties`, MNN, model packages
 - [Testing](agent/testing.md) — unit/instrumented tests and backend smoke
+- [Protected master](agent/branch-protection.md) — required checks, merge policy and acceptance
 
 ## Quick reference
 
