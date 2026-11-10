@@ -88,6 +88,27 @@ class EvidenceTests(unittest.TestCase):
         self.report(self.root, '<testsuite tests="1" skipped="1"><testcase><skipped/></testcase></testsuite>')
         self.assertFalse(checker.inspect([self.root])['ok'])
 
+    def test_summary_failure_is_reflected_in_saved_json(self):
+        self.report(self.root, '<testsuite tests="1"><testcase/></testsuite>')
+        output = self.root / 'result.json'
+        run = subprocess.run([sys.executable, str(SCRIPT), str(self.root), '--output', str(output)],
+                             capture_output=True, text=True,
+                             env={**os.environ, 'GITHUB_STEP_SUMMARY': str(self.root / 'missing' / 'summary.md')})
+        self.assertEqual(run.returncode, 1)
+        self.assertEqual(json.loads(output.read_text()), json.loads(run.stdout))
+        self.assertFalse(json.loads(output.read_text())['ok'])
+
+    def test_output_failure_cannot_emit_pass_summary(self):
+        self.report(self.root, '<testsuite tests="1"><testcase/></testsuite>')
+        summary = self.root / 'summary.md'
+        run = subprocess.run([sys.executable, str(SCRIPT), str(self.root), '--output', str(self.root)],
+                             capture_output=True, text=True,
+                             env={**os.environ, 'GITHUB_STEP_SUMMARY': str(summary)})
+        self.assertEqual(run.returncode, 1)
+        self.assertFalse(json.loads(run.stdout)['ok'])
+        self.assertIn('FAIL', summary.read_text())
+        self.assertNotIn('PASS', summary.read_text())
+
 
 if __name__ == '__main__':
     unittest.main()

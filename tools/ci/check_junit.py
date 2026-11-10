@@ -90,10 +90,16 @@ def main(argv=None):
     parser.add_argument('--output', type=Path, help='write JSON evidence to this file')
     args = parser.parse_args(argv)
     result = inspect(args.directories)
-    try:
+    def save_evidence():
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(json.dumps(result, indent=2) + '\n', encoding='utf-8')
+    try:
+        save_evidence()
+    except OSError:
+        result['ok'] = False
+        result['issues'].append('could not write evidence')
+    try:
         summary = os.environ.get('GITHUB_STEP_SUMMARY')
         if summary:
             with open(summary, 'a', encoding='utf-8') as stream:
@@ -102,7 +108,13 @@ def main(argv=None):
                                       ('reports', 'tests', 'skipped', 'failures', 'errors')) + '\n')
     except OSError:
         result['ok'] = False
-        result['issues'].append('could not write evidence or summary')
+        result['issues'].append('could not write summary')
+    try:
+        save_evidence()
+    except OSError:
+        result['ok'] = False
+        if 'could not write evidence' not in result['issues']:
+            result['issues'].append('could not write evidence')
     print(json.dumps(result))
     return 0 if result['ok'] else 1
 

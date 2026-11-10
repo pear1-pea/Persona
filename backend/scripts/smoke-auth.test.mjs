@@ -21,7 +21,8 @@ async function fixture(t, options = {}) {
         res.write('{"token":')
         return
       }
-      return reply(options.failSecond && registrations === 2 ? 503 : 200, { token: String(registrations) })
+      const body = options.invalidToken && registrations === 2 ? options.invalidToken : { token: options.duplicateToken ? "1" : String(registrations) }
+      return reply(options.failSecond && registrations === 2 ? 503 : 200, body)
     }
     if (req.url === "/api/auth/account") {
       deleted.push(req.headers.authorization)
@@ -74,3 +75,22 @@ for (const stall of ["headers", "body"]) {
     await assert.rejects(f.run(), /request timed out/)
   })
 }
+
+test("invalid second registration cannot become anonymous isolation success", async t => {
+  for (const invalidToken of [{}, { token: null }, { token: "" }, { token: " " }, { token: 2 }, { token: "bad\r\ntoken" }]) {
+    const f = await fixture(t, { invalidToken })
+    await assert.rejects(f.run(), /registration.*token/i)
+    assert.deepEqual(f.deleted, ["Bearer 1"])
+  }
+})
+
+test("unsafe origins are rejected before sending requests", async () => {
+  for (const baseUrl of ["http://127.0.0.1.example.com", "http://127.0.0.1@remote.example", "https://user:pass@example.com", "file:///tmp/test", "http://example.com"]) {
+    await assert.rejects(runSmoke({ baseUrl, timeoutMs: 10 }), /base URL/i)
+  }
+})
+
+test("two registrations cannot reuse the same identity token", async t => {
+  const f = await fixture(t, { duplicateToken: true })
+  await assert.rejects(f.run(), /duplicate token/i)
+})

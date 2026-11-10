@@ -11,6 +11,8 @@ rejecting missing/malformed XML, inconsistent counts, failures/errors and varian
 with no executed tests. It writes count-only JSON and a GitHub job summary without
 test names, output or private messages. Output parent directories are created so
 missing-report failures can still retain evidence.
+Summary write failures are reflected in the final saved JSON and exit status;
+evidence write failures cannot emit a passing summary.
 
 `environment.py --output FILE [--node] [--android]` records the checked-out source,
 OS, architecture, Python and requested actual runtime versions. Android package
@@ -21,13 +23,17 @@ fail explicitly; high/critical findings also fail. The workflow preserves the np
 exit code and audit JSON. An unavailable registry is never classified as clean.
 
 `bash scripts/ci-wait-http.sh URL PID [ATTEMPTS=30] [DELAY=1]` requires the owned
-process to remain alive and the HTTP request to finish successfully. Each attempt
+process to remain alive and the HTTP request to return exactly 200. Redirects are
+not readiness success. Each attempt
 has a one-second connect timeout and two-second overall timeout. The host workflow
 retains readiness/server logs and cleans up its own child process on exit.
 
 `backend/scripts/smoke-auth.test.mjs` runs real loopback HTTP fixtures covering
 successful cleanup, partial registration failure, independent account cleanup,
 primary-error preservation, and response-header/body stalls. It is part of npm test.
+Registration must return distinct, valid Bearer tokens before isolation operations.
+Smoke parses the base URL, permits plaintext HTTP only on loopback, rejects URL
+credentials/query/fragment, and refuses redirects instead of forwarding requests.
 
 The opt-in `scripts/ci-probe-lint.sh` uses real Gradle lint: an unguarded API-33 call
 must fail with NewApi, then removing the owned temporary source must restore lint
