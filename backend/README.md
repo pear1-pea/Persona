@@ -4,6 +4,16 @@
 
 ## 配置
 
+Backend 使用 Node 24，具体版本由仓库根目录 `.nvmrc` 固定。使用 nvm 时，
+先在仓库根目录执行 `nvm install` 和 `nvm use`，再进入 `backend/`。
+CI 从同一文件读取版本；Dockerfile 的 Node 镜像版本应与其同步更新。
+运行 `node --version` 和 `npm --version` 确认当前环境后，再执行 `npm ci`。
+
+容器构建上下文为 `backend/`，例如在仓库根目录执行
+`docker build -t persona-backend:local backend/`。`.dockerignore` 排除本地环境文件、
+依赖目录和日志。CI 在隔离 PostgreSQL 上同时验证直接启动的服务及容器服务，
+并保留基础镜像 digest、实际 Node/npm 版本、启动日志和 smoke 输出。
+
 复制 `.env.example` 为 `.env`，填写：
 
 ```text

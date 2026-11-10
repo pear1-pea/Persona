@@ -54,6 +54,14 @@ npm run smoke     # two-user authorization/ownership acceptance, needs a running
 verifies public/private persona isolation, cross-user deletion rejection, session
 listing and account deletion.
 
+Use the exact Node 24 version in the root `.nvmrc` before installing dependencies.
+Both backend CI jobs read that file and print Node/npm versions. The integration job
+also builds `backend/Dockerfile`, records the official base image digest, checks the
+container's Node version against `.nvmrc`, and runs auth/persona smoke against the
+container using the isolated PostgreSQL service. Container logs are retained even
+when readiness or smoke fails. This check runs on the GitHub Linux runner; it does
+not require the developer's Windows machine or phone.
+
 `test:integration` requires a disposable PostgreSQL database with schema/extension
 creation rights. It uses random schemas, a fake key and a controllable local upstream;
 it never calls DeepSeek. It covers stream termination, cancellation, backpressure,

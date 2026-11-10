@@ -12,7 +12,7 @@
 | CMake (native build) | 3.22.1 |
 | JVM target | 11 |
 | ABI | `arm64-v8a` |
-| Node (backend) | >= 20 |
+| Node (backend) | 24; exact version in root `.nvmrc` |
 
 Versions for AndroidX libraries are declared in `gradle/libs.versions.toml`.
 
