@@ -288,7 +288,8 @@ jobs:
           test "$(docker exec persona-backend-ci node --version)" = "v${node_version}"
           ready=false
           for i in {1..30}; do
-            if curl --max-time 2 -fsS http://127.0.0.1:8081/healthz > /dev/null; then
+            http_code=$(curl --max-time 2 -fsS --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8081/healthz) || http_code=000
+            if [[ $http_code == 200 ]]; then
               ready=true
               break
             fi

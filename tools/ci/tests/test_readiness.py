@@ -66,6 +66,23 @@ class ReadinessTests(unittest.TestCase):
         self.assertIn('owned process exited', result.stderr)
         self.assertLess(time.monotonic() - start, 3)
 
+    def test_redirect_is_not_ready(self):
+        class Redirect(Handler):
+            def do_GET(self):
+                self.send_response(302)
+                self.send_header('Location', '/login')
+                self.end_headers()
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Redirect)
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        try:
+            result = self.run_helper('http://127.0.0.1:%d' % server.server_port, self.child.pid, 1, 0)
+            self.assertNotEqual(result.returncode, 0)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
     def test_closed_port_deadline_and_pipefail_log(self):
         with tempfile.TemporaryDirectory() as directory:
             log = pathlib.Path(directory) / 'readiness.log'

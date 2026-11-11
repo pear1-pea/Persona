@@ -19,7 +19,8 @@ command -v curl >/dev/null 2>&1 || { echo 'Readiness requires curl.' >&2; exit 2
 
 for ((i=1; i<=attempts; i++)); do
   kill -0 "$pid" 2>/dev/null || { echo 'Readiness failed: owned process exited.' >&2; exit 1; }
-  if curl --silent --fail --output /dev/null --connect-timeout 1 --max-time 2 "$url" 2>/dev/null; then
+  http_code=$(curl --silent --fail --output /dev/null --write-out '%{http_code}' --connect-timeout 1 --max-time 2 "$url" 2>/dev/null) || http_code=000
+  if [[ $http_code == 200 ]]; then
     kill -0 "$pid" 2>/dev/null || { echo 'Readiness failed: owned process exited.' >&2; exit 1; }
     echo 'HTTP endpoint ready.'
     exit 0

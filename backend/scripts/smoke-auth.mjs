@@ -1,10 +1,13 @@
 import { pathToFileURL } from "node:url"
 
 export async function runSmoke({ baseUrl = process.env.PERSONA_BACKEND_BASE_URL || "", timeoutMs = 10000 } = {}) {
-  baseUrl = baseUrl.replace(/\/$/, "")
-  if (!baseUrl.startsWith("https://") && !baseUrl.startsWith("http://127.0.0.1")) {
-    throw new Error("Set PERSONA_BACKEND_BASE_URL to HTTPS or 127.0.0.1")
+  let origin
+  try { origin = new URL(baseUrl) } catch { throw new Error("Invalid smoke base URL") }
+  if (origin.username || origin.password || origin.search || origin.hash ||
+      !(origin.protocol === "https:" || (origin.protocol === "http:" && origin.hostname === "127.0.0.1"))) {
+    throw new Error("Invalid smoke base URL: require HTTPS or loopback HTTP without credentials")
   }
+  baseUrl = origin.href.replace(/\/$/, "")
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error("Invalid request timeout")
   const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`
   const password = `Persona-${suffix}!`
@@ -12,6 +15,7 @@ export async function runSmoke({ baseUrl = process.env.PERSONA_BACKEND_BASE_URL 
   try {
     userA = await register(`persona-a-${suffix}@example.test`, password)
     userB = await register(`persona-b-${suffix}@example.test`, password)
+    if (userA.token === userB.token) throw new Error("Registration returned duplicate token")
     const publicPersona = await request("POST", "/api/personas", userA.token, {
       name: "Public A",
       traits: ["Public"],
@@ -52,7 +56,11 @@ export async function runSmoke({ baseUrl = process.env.PERSONA_BACKEND_BASE_URL 
   console.log("Auth and Persona isolation smoke test passed")
 
   async function register(email, passwordValue) {
-    return request("POST", "/api/auth/register", null, { email, password: passwordValue })
+    const user = await request("POST", "/api/auth/register", null, { email, password: passwordValue })
+    if (!user || typeof user.token !== "string" || user.token.trim() !== user.token || !/^[A-Za-z0-9._~+/-]+=*$/.test(user.token)) {
+      throw new Error("Invalid registration token")
+    }
+    return user
   }
 
   async function send(method, path, token, body, expected) {
@@ -62,6 +70,7 @@ export async function runSmoke({ baseUrl = process.env.PERSONA_BACKEND_BASE_URL 
     try {
       const response = await fetch(`${baseUrl}${path}`, {
         method,
+        redirect: "error",
         signal: controller.signal,
         headers: {
           ...(token ? { authorization: `Bearer ${token}` } : {}),
